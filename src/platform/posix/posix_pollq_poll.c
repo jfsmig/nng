@@ -52,7 +52,7 @@ typedef struct nni_posix_pollq {
 static nni_posix_pollq *nni_poll_pqs;
 static int              nni_poll_npq;
 
-void
+nng_err
 nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 {
 	nni_posix_pollq *pq = &nni_poll_pqs[fd % nni_poll_npq];
@@ -82,6 +82,7 @@ nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 	nni_list_append(&pq->addq, pfd);
 	nni_mtx_unlock(&pq->mtx);
 	nni_plat_pipe_raise(pq->wakewfd);
+	return (NNG_OK);
 }
 
 int

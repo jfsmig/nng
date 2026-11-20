@@ -41,7 +41,7 @@ typedef struct nni_posix_pollq {
 static nni_posix_pollq *nni_kqueue_pqs;
 static int              nni_kqueue_npq;
 
-void
+nng_err
 nni_posix_pfd_init(nni_posix_pfd *pf, int fd, nni_posix_pfd_cb cb, void *arg)
 {
 	nni_posix_pollq *pq;
@@ -81,6 +81,7 @@ nni_posix_pfd_init(nni_posix_pfd *pf, int fd, nni_posix_pfd_cb cb, void *arg)
 	// This may fail, but if it does, we get another try with
 	// ARM.  It's an attempt to preallocate anyway.
 	(void) kevent(pq->kq, ev, 2, NULL, 0, NULL);
+	return (NNG_OK);
 }
 
 void

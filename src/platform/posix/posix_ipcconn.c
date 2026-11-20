@@ -453,6 +453,7 @@ nni_posix_ipc_alloc(
     nni_ipc_conn **cp, nni_sockaddr *sa, nni_ipc_dialer *d, int fd)
 {
 	ipc_conn *c;
+	nng_err   rv;
 
 	if ((c = NNI_ALLOC_STRUCT(c)) == NULL) {
 		return (NNG_ENOMEM);
@@ -473,7 +474,11 @@ nni_posix_ipc_alloc(
 	nni_mtx_init(&c->mtx);
 	nni_aio_list_init(&c->readq);
 	nni_aio_list_init(&c->writeq);
-	nni_posix_pfd_init(&c->pfd, fd, ipc_cb, c);
+	if ((rv = nni_posix_pfd_init(&c->pfd, fd, ipc_cb, c)) != NNG_OK) {
+		nni_mtx_fini(&c->mtx);
+		NNI_FREE_STRUCT(c);
+		return (rv);
+	}
 
 	*cp = c;
 	return (0);

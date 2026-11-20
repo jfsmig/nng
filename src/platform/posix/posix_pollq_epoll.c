@@ -49,7 +49,7 @@ typedef struct nni_posix_pollq {
 static nni_posix_pollq *nni_epoll_pqs;
 static int              nni_epoll_npq;
 
-void
+nng_err
 nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 {
 	nni_posix_pollq *pq;
@@ -70,6 +70,7 @@ nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 	pfd->added = false;
 
 	NNI_LIST_NODE_INIT(&pfd->node);
+	return (NNG_OK);
 }
 
 int

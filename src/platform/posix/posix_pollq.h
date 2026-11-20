@@ -33,7 +33,10 @@
 #error "No suitable poller defined"
 #endif
 
-extern void nni_posix_pfd_init(nni_posix_pfd *, int, nni_posix_pfd_cb, void *);
+// nni_posix_pfd_init fails if the poller cannot watch the descriptor.
+// The caller still owns the descriptor in that case.
+extern nng_err nni_posix_pfd_init(
+    nni_posix_pfd *, int, nni_posix_pfd_cb, void *);
 extern void nni_posix_pfd_fini(nni_posix_pfd *);
 extern void nni_posix_pfd_stop(nni_posix_pfd *);
 extern int  nni_posix_pfd_arm(nni_posix_pfd *, unsigned);

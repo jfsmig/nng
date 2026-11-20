@@ -379,7 +379,14 @@ nni_plat_udp_open(nni_plat_udp **upp, const nni_sockaddr *bindaddr)
 		return (rv);
 	}
 
-	nni_posix_pfd_init(&udp->udp_pfd, udp->udp_fd, nni_posix_udp_cb, udp);
+	rv = nni_posix_pfd_init(
+	    &udp->udp_pfd, udp->udp_fd, nni_posix_udp_cb, udp);
+	if (rv != NNG_OK) {
+		(void) close(udp->udp_fd);
+		nni_mtx_fini(&udp->udp_mtx);
+		NNI_FREE_STRUCT(udp);
+		return (rv);
+	}
 
 	*upp = udp;
 	return (0);
