@@ -38,7 +38,7 @@ typedef struct nni_posix_pollq {
 static nni_posix_pollq *nni_port_pqs;
 static int              nni_port_npq;
 
-void
+nng_err
 nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 {
 	nni_posix_pollq *pq;
@@ -54,6 +54,7 @@ nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 	pfd->pq     = pq;
 	pfd->cb     = cb;
 	pfd->data   = arg;
+	return (NNG_OK);
 }
 
 int

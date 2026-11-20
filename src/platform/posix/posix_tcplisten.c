@@ -243,7 +243,12 @@ tcp_listener_listen(void *arg)
 		return (rv);
 	}
 
-	nni_posix_pfd_init(&l->pfd, fd, tcp_listener_cb, l);
+	if ((rv = nni_posix_pfd_init(&l->pfd, fd, tcp_listener_cb, l)) !=
+	    NNG_OK) {
+		(void) close(fd);
+		nni_mtx_unlock(&l->mtx);
+		return (rv);
+	}
 
 	l->started = true;
 	nni_mtx_unlock(&l->mtx);
@@ -431,7 +436,11 @@ tcp_listener_set_listen_fd(void *arg, const void *buf, size_t sz, nni_type t)
 		nni_mtx_unlock(&l->mtx);
 		return (NNG_ECLOSED);
 	}
-	nni_posix_pfd_init(&l->pfd, fd, tcp_listener_cb, l);
+	if ((rv = nni_posix_pfd_init(&l->pfd, fd, tcp_listener_cb, l)) !=
+	    NNG_OK) {
+		nni_mtx_unlock(&l->mtx);
+		return (rv);
+	}
 	l->started = true;
 	nni_mtx_unlock(&l->mtx);
 	return (NNG_OK);

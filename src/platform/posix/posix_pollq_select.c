@@ -44,10 +44,15 @@ typedef struct nni_posix_pollq {
 
 static nni_posix_pollq nni_posix_global_pollq;
 
-void
+nng_err
 nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 {
 	nni_posix_pollq *pq = &nni_posix_global_pollq;
+
+	// select() cannot watch descriptors at or above FD_SETSIZE.
+	if (fd >= FD_SETSIZE) {
+		return (NNG_ENOFILES);
+	}
 
 	// Set this is as soon as possible (narrow the close-exec race as
 	// much as we can; better options are system calls that suppress
@@ -55,9 +60,6 @@ nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 	(void) fcntl(fd, F_SETFD, FD_CLOEXEC);
 	(void) fcntl(fd, F_SETFL, O_NONBLOCK);
 
-	if (fd >= FD_SETSIZE) {
-		return;
-	}
 	nni_mtx_init(&pfd->mtx);
 	nni_cv_init(&pfd->cv, &pq->mtx);
 	pfd->fd      = fd;
@@ -73,6 +75,7 @@ nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 		pq->maxfd = fd;
 	}
 	nni_mtx_unlock(&pq->mtx);
+	return (NNG_OK);
 }
 
 int

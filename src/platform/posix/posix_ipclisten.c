@@ -328,7 +328,11 @@ ipc_listener_set_listen_fd(void *arg, const void *buf, size_t sz, nni_type t)
 		nni_mtx_unlock(&l->mtx);
 		return (NNG_ECLOSED);
 	}
-	nni_posix_pfd_init(&l->pfd, fd, ipc_listener_cb, l);
+	if ((rv = nni_posix_pfd_init(&l->pfd, fd, ipc_listener_cb, l)) !=
+	    NNG_OK) {
+		nni_mtx_unlock(&l->mtx);
+		return (rv);
+	}
 	l->started = true;
 	nni_mtx_unlock(&l->mtx);
 	return (NNG_OK);
@@ -482,7 +486,16 @@ ipc_listener_listen(void *arg)
 		return (rv);
 	}
 
-	nni_posix_pfd_init(&l->pfd, fd, ipc_listener_cb, l);
+	if ((rv = nni_posix_pfd_init(&l->pfd, fd, ipc_listener_cb, l)) !=
+	    NNG_OK) {
+		nni_mtx_unlock(&l->mtx);
+		(void) close(fd);
+		if (path != NULL) {
+			unlink(path);
+		}
+		nni_strfree(path);
+		return (rv);
+	}
 
 #ifdef NNG_HAVE_ABSTRACT_SOCKETS
 	// If the original address was for a system assigned value,

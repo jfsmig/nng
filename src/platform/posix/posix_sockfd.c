@@ -436,10 +436,15 @@ nng_err
 nni_sfd_conn_alloc(nni_sfd_conn **cp, int fd)
 {
 	nni_sfd_conn *c;
+	nng_err       rv;
+
 	if ((c = NNI_ALLOC_STRUCT(c)) == NULL) {
 		return (NNG_ENOMEM);
 	}
-	nni_posix_pfd_init(&c->pfd, fd, sfd_cb, c);
+	if ((rv = nni_posix_pfd_init(&c->pfd, fd, sfd_cb, c)) != NNG_OK) {
+		NNI_FREE_STRUCT(c);
+		return (rv);
+	}
 
 	c->closed = false;
 	c->fd     = fd;
