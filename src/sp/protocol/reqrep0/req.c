@@ -59,7 +59,8 @@ struct req0_ctx {
 	nng_msg      *req_msg;    // request message (owned by protocol)
 	size_t        req_len;    // length of request message (for stats)
 	nng_msg      *rep_msg;    // reply message
-	nni_duration  retry;
+	nni_duration  retry;      // resend time for the next request
+	nni_duration  req_retry;  // resend time of the current request
 	nni_time      retry_time; // retry after this expires
 	bool          conn_reset; // sent message w/o retry, peer disconnect
 };
@@ -277,7 +278,7 @@ req0_pipe_close(void *arg)
 	while ((ctx = nni_list_first(&p->contexts)) != NULL) {
 		nni_list_remove(&p->contexts, ctx);
 		nng_aio *aio;
-		if (ctx->retry <= 0) {
+		if (ctx->req_retry <= 0) {
 			// If we can't retry, then just cancel the operation
 			// altogether.  We should only be waiting for recv,
 			// because we will already have sent if we are here.
@@ -294,7 +295,7 @@ req0_pipe_close(void *arg)
 			// Also move this immediately to the resend queue.
 			// The timer should still be firing, so we don't need
 			// to restart or reschedule that.
-			ctx->retry_time = nni_clock() + ctx->retry;
+			ctx->retry_time = nni_clock() + ctx->req_retry;
 
 			if (!nni_list_node_active(&ctx->send_node)) {
 				nni_list_append(&s->send_queue, ctx);
@@ -398,7 +399,7 @@ req0_recv_cb(void *arg)
 	ctx->request_id = 0;
 	if (ctx->req_msg != NULL) {
 		// Only free msg if we originally cloned it (for retries)
-		if (ctx->retry > 0) {
+		if (ctx->req_retry > 0) {
 			nni_msg_free(ctx->req_msg);
 		}
 		ctx->req_msg = NULL;
@@ -542,7 +543,7 @@ req0_run_send_queue(req0_sock *s, nni_aio_completions *sent_list)
 		// a pipe to send to.  Otherwise, we should get handled
 		// the next time that the send_queue is run.  We don't do this
 		// if the retry is "disabled" with NNG_DURATION_INFINITE.
-		if (ctx->retry > 0) {
+		if (ctx->req_retry > 0) {
 			nni_list_node_remove(&ctx->retry_node);
 			nni_list_append(&s->retry_queue, ctx);
 		}
@@ -579,7 +580,7 @@ req0_run_send_queue(req0_sock *s, nni_aio_completions *sent_list)
 		// unique.  We can freely clone it.
 		// But only do so if we need to hang onto it (for potential
 		// retries)
-		if (ctx->retry > 0) {
+		if (ctx->req_retry > 0) {
 			nni_msg_clone(ctx->req_msg);
 		}
 		nni_aio_set_msg(&p->aio_send, ctx->req_msg);
@@ -602,7 +603,7 @@ req0_ctx_reset(req0_ctx *ctx)
 	}
 	if (ctx->req_msg != NULL) {
 		// Only free msg if we originally cloned it (for retries)
-		if (ctx->retry > 0) {
+		if (ctx->req_retry > 0) {
 			nni_msg_free(ctx->req_msg);
 		}
 		ctx->req_msg = NULL;
@@ -789,8 +790,11 @@ req0_ctx_send(void *arg, nni_aio *aio)
 	ctx->send_aio = aio;
 	nni_aio_set_msg(aio, NULL);
 
-	if (ctx->retry > 0) {
-		ctx->retry_time = nni_clock() + ctx->retry;
+	// The request keeps the resend time it was sent with, because it
+	// decides whether we hold a reference on the request message.
+	ctx->req_retry = ctx->retry;
+	if (ctx->req_retry > 0) {
+		ctx->retry_time = nni_clock() + ctx->req_retry;
 		nni_list_append(&s->retry_queue, ctx);
 		if (!s->retry_active) {
 			s->retry_active = true;

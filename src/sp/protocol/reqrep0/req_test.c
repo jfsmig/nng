@@ -297,6 +297,46 @@ test_req_resend_disconnect(void)
 	NUTS_CLOSE(rep2);
 }
 
+// Changing the resend time while a request is outstanding must not change
+// how that request's message is held and released.
+static void
+req_change_resend_during_request(nng_duration before, nng_duration after)
+{
+	nng_socket req;
+	nng_socket rep;
+
+	NUTS_PASS(nng_req0_open(&req));
+	NUTS_PASS(nng_rep0_open(&rep));
+
+	NUTS_PASS(nng_socket_set_ms(req, NNG_OPT_RECVTIMEO, SECOND));
+	NUTS_PASS(nng_socket_set_ms(rep, NNG_OPT_RECVTIMEO, SECOND));
+	NUTS_PASS(nng_socket_set_ms(req, NNG_OPT_SENDTIMEO, SECOND));
+	NUTS_PASS(nng_socket_set_ms(rep, NNG_OPT_SENDTIMEO, SECOND));
+	NUTS_PASS(nng_socket_set_ms(req, NNG_OPT_REQ_RESENDTIME, before));
+
+	NUTS_MARRY(rep, req);
+	NUTS_SEND(req, "ping");
+	NUTS_RECV(rep, "ping");
+	NUTS_PASS(nng_socket_set_ms(req, NNG_OPT_REQ_RESENDTIME, after));
+	NUTS_SEND(rep, "pong");
+	NUTS_RECV(req, "pong");
+
+	NUTS_CLOSE(req);
+	NUTS_CLOSE(rep);
+}
+
+void
+test_req_resend_enabled_during_request(void)
+{
+	req_change_resend_during_request(0, 60 * SECOND);
+}
+
+void
+test_req_resend_disabled_during_request(void)
+{
+	req_change_resend_during_request(60 * SECOND, 0);
+}
+
 void
 test_req_disconnect_no_retry(void)
 {
@@ -1068,6 +1108,10 @@ NUTS_TESTS = {
 	{ "req disconnect no retry", test_req_disconnect_no_retry },
 	{ "req disconnect abort", test_req_disconnect_abort },
 	{ "req resend reconnect", test_req_resend_reconnect },
+	{ "req resend enabled during request",
+	    test_req_resend_enabled_during_request },
+	{ "req resend disabled during request",
+	    test_req_resend_disabled_during_request },
 	{ "req cancel", test_req_cancel },
 	{ "req cancel abort recv", test_req_cancel_abort_recv },
 	{ "req cancel post recv", test_req_cancel_post_recv },
