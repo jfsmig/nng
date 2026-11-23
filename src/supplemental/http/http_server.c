@@ -247,6 +247,11 @@ http_sc_reap(void *arg)
 	nni_aio_stop(&sc->txdataio);
 	nni_aio_stop(&sc->cbaio);
 
+	// The connection may have closed while reading a request body.
+	if (sc->handler != NULL) {
+		nni_http_handler_fini(sc->handler);
+		sc->handler = NULL;
+	}
 	if (sc->conn != NULL) {
 		nni_http_conn_fini(sc->conn);
 	}
@@ -637,6 +642,9 @@ http_sconn_rxdone(void *arg)
 		iov.iov_len         = req->data.size;
 		sc->unconsumed_body = 0;
 		sc->handler         = h;
+		// Hold the handler while the body is read, because it may be
+		// removed from the server and freed meanwhile.
+		nni_atomic_inc(&h->ref);
 		nni_mtx_unlock(&s->mtx);
 		nni_aio_set_iov(&sc->rxaio, 1, &iov);
 		nni_http_read_full(sc->conn, aio);
@@ -644,12 +652,14 @@ http_sconn_rxdone(void *arg)
 	}
 
 finish:
-	sc->release = h;
-	sc->handler = NULL;
-
 	// Set a reference -- this because the callback may be running
 	// asynchronously even after it gets removed from the server.
-	nni_atomic_inc(&h->ref);
+	// After reading a body, we already hold the one taken before it.
+	if (sc->handler == NULL) {
+		nni_atomic_inc(&h->ref);
+	}
+	sc->release = h;
+	sc->handler = NULL;
 
 	nni_aio_reset(&sc->cbaio);
 

@@ -1100,6 +1100,89 @@ test_server_post_handler(void)
 	server_free(&st);
 }
 
+// A handler deleted and freed while the server reads the body of a request
+// matched to it must stay valid until that request is done.
+static void
+test_server_del_handler_during_body(void)
+{
+	struct server_test st;
+	nng_http_handler  *h;
+	char    head[] = "POST /post HTTP/1.1\r\nHost: localhost\r\n"
+	                 "Content-Length: 4\r\n\r\n";
+	char    body[] = "1234";
+	char    reply[4];
+	nng_iov iov;
+
+	NUTS_PASS(nng_http_handler_alloc(&h, "/post", httpecho));
+	nng_http_handler_set_method(h, "POST");
+	server_setup(&st, h);
+	nng_aio_set_timeout(st.aio, 5000);
+
+	// Send the request head only, so that the server waits for the body.
+	iov.iov_buf = head;
+	iov.iov_len = sizeof(head) - 1;
+	NUTS_PASS(nng_aio_set_iov(st.aio, 1, &iov));
+	nng_http_write_all(st.conn, st.aio);
+	nng_aio_wait(st.aio);
+	NUTS_PASS(nng_aio_result(st.aio));
+	nng_msleep(200);
+
+	NUTS_PASS(nng_http_server_del_handler(st.s, h));
+	nng_http_handler_free(h);
+
+	iov.iov_buf = body;
+	iov.iov_len = sizeof(body) - 1;
+	NUTS_PASS(nng_aio_set_iov(st.aio, 1, &iov));
+	nng_http_write_all(st.conn, st.aio);
+	nng_aio_wait(st.aio);
+	NUTS_PASS(nng_aio_result(st.aio));
+
+	nng_http_reset(st.conn);
+	nng_http_read_response(st.conn, st.aio);
+	nng_aio_wait(st.aio);
+	NUTS_PASS(nng_aio_result(st.aio));
+	NUTS_HTTP_STATUS(st.conn, NNG_HTTP_STATUS_OK);
+	iov.iov_buf = reply;
+	iov.iov_len = sizeof(reply);
+	NUTS_PASS(nng_aio_set_iov(st.aio, 1, &iov));
+	nng_http_read_all(st.conn, st.aio);
+	nng_aio_wait(st.aio);
+	NUTS_PASS(nng_aio_result(st.aio));
+	NUTS_TRUE(memcmp(reply, body, sizeof(reply)) == 0);
+
+	server_free(&st);
+}
+
+// A connection closed while the server reads a request body must not keep
+// the handler alive.
+static void
+test_server_close_during_body(void)
+{
+	struct server_test st;
+	nng_http_handler  *h;
+	char    head[] = "POST /post HTTP/1.1\r\nHost: localhost\r\n"
+	                 "Content-Length: 4\r\n\r\n";
+	nng_iov iov;
+
+	NUTS_PASS(nng_http_handler_alloc(&h, "/post", httpecho));
+	nng_http_handler_set_method(h, "POST");
+	server_setup(&st, h);
+	nng_aio_set_timeout(st.aio, 5000);
+
+	iov.iov_buf = head;
+	iov.iov_len = sizeof(head) - 1;
+	NUTS_PASS(nng_aio_set_iov(st.aio, 1, &iov));
+	nng_http_write_all(st.conn, st.aio);
+	nng_aio_wait(st.aio);
+	NUTS_PASS(nng_aio_result(st.aio));
+	nng_msleep(200);
+
+	nng_http_close(st.conn);
+	st.conn = NULL;
+	nng_msleep(100);
+	server_free(&st);
+}
+
 static void
 test_server_transfer_encoding(void)
 {
@@ -1785,6 +1868,9 @@ NUTS_TESTS = {
 	{ "server pipelined requests", test_server_pipelined_requests },
 	{ "server invalid utf", test_server_invalid_utf8 },
 	{ "server post handler", test_server_post_handler },
+	{ "server del handler during body",
+	    test_server_del_handler_during_body },
+	{ "server close during body", test_server_close_during_body },
 	{ "server transfer encoding", test_server_transfer_encoding },
 	{ "server bad content length", test_server_bad_content_length },
 	{ "server bad content length closes",
