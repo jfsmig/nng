@@ -353,7 +353,7 @@ nni_msgq_resize(nni_msgq *mq, int cap)
 		// the case of pushback or cap == 0.
 		// we delete the oldest messages first
 		msg = mq->mq_msgs[mq->mq_get++];
-		if (mq->mq_get > mq->mq_alloc) {
+		if (mq->mq_get >= mq->mq_alloc) {
 			mq->mq_get = 0;
 		}
 		mq->mq_len--;
