@@ -65,6 +65,14 @@ The following parameters are present:
 - `num_resolver_threads` \
   Changes the number of threads used for asynchronous DNS lookups.
 
+> [!NOTE]
+> When NNG uses the `poll()` poller, each poller thread can watch one descriptor fewer than the
+> open-file limit (`RLIMIT_NOFILE`) in force when the library is initialized, and never fewer
+> than 127. When that limit is 1048576 or more, unlimited, or cannot be read, each thread can
+> watch 4999 descriptors. Builds that define `NNG_MAX_OPEN` use that value in place of the limit.
+> Changing the limit afterwards has no effect. Beyond this count, operations that need another
+> descriptor fail with [`NNG_ENOFILES`].
+
 ## Finalization
 
 ```c

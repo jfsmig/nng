@@ -45,6 +45,7 @@ typedef struct nni_posix_pollq {
 	struct pollfd  *fds;
 	nni_posix_pfd **pfds;
 	unsigned        nalloc;
+	unsigned        npfd; // registered descriptors, protected by mtx
 	bool            closed;
 	bool            init;
 } nni_posix_pollq;
@@ -56,6 +57,16 @@ nng_err
 nni_posix_pfd_init(nni_posix_pfd *pfd, int fd, nni_posix_pfd_cb cb, void *arg)
 {
 	nni_posix_pollq *pq = &nni_poll_pqs[fd % nni_poll_npq];
+
+	// The tables are sized at initialization, and their first slot is
+	// taken by the waker pipe.
+	nni_mtx_lock(&pq->mtx);
+	if (pq->npfd >= pq->nalloc - 1) {
+		nni_mtx_unlock(&pq->mtx);
+		return (NNG_ENOFILES);
+	}
+	pq->npfd++;
+	nni_mtx_unlock(&pq->mtx);
 
 	// Set this is as soon as possible (narrow the close-exec race as
 	// much as we can; better options are system calls that suppress
@@ -125,6 +136,7 @@ nni_posix_pfd_stop(nni_posix_pfd *pfd)
 			nni_list_node_remove(&pfd->node);
 			nni_list_node_remove(&pfd->reap);
 			pfd->reaped = true;
+			pq->npfd--;
 		}
 	}
 	nni_mtx_unlock(&pq->mtx);
@@ -188,6 +200,7 @@ nni_poll_thr(void *arg)
 			events = nni_atomic_get(&pfd->events);
 
 			if (events != 0) {
+				NNI_ASSERT(nfds < (int) pq->nalloc);
 				fds[nfds].fd      = pfd->fd;
 				fds[nfds].events  = (unsigned) events;
 				fds[nfds].revents = 0;
@@ -249,6 +262,7 @@ nni_poll_thr(void *arg)
 				nni_list_node_remove(&pfd->node);
 				nni_list_node_remove(&pfd->reap);
 				pfd->reaped = true;
+				pq->npfd--;
 			}
 			nni_cv_wake(&pq->cv);
 			nni_mtx_unlock(&pq->mtx);
@@ -262,6 +276,7 @@ nni_poll_thr(void *arg)
 		nni_list_node_remove(&pfd->node);
 		nni_list_node_remove(&pfd->reap);
 		pfd->reaped = true;
+		pq->npfd--;
 	}
 	nni_cv_wake(&pq->cv);
 	nni_mtx_unlock(&pq->mtx);
