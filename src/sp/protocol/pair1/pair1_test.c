@@ -664,6 +664,103 @@ test_pair1_poll_writable(void)
 	NUTS_CLOSE(s1);
 }
 
+// Holding every task thread delays the completion callbacks of the pipes,
+// so that a test can let them run after a pipe has been closed.
+#define TASK_THREADS 2 // the fewest the library runs
+
+static struct {
+	nng_mtx *mtx;
+	nng_cv  *cv;
+	int      started;
+	bool     released;
+} blocker;
+
+static void
+block_task(void *arg)
+{
+	(void) arg;
+	nng_mtx_lock(blocker.mtx);
+	blocker.started++;
+	nng_cv_wake(blocker.cv);
+	while (!blocker.released) {
+		nng_cv_wait(blocker.cv);
+	}
+	nng_mtx_unlock(blocker.mtx);
+}
+
+// A message received by a pipe whose callback runs while the pipe is being
+// stopped must not leave the socket waiting on that pipe.
+static void
+test_pair1_recv_during_pipe_stop(void)
+{
+	nng_init_params params = { 0 };
+	nng_socket      s1;
+	nng_socket      s2;
+	nng_pipe        p1;
+	nng_pipe        p2;
+	nng_aio        *aios[TASK_THREADS];
+	nng_msg        *msg;
+
+	params.num_task_threads = TASK_THREADS;
+	params.max_task_threads = TASK_THREADS;
+	nng_fini();
+	NUTS_PASS(nng_init(&params));
+	NUTS_PASS(nng_mtx_alloc(&blocker.mtx));
+	NUTS_PASS(nng_cv_alloc(&blocker.cv, blocker.mtx));
+
+	NUTS_PASS(nng_pair1_open(&s1));
+	NUTS_PASS(nng_pair1_open(&s2));
+	NUTS_PASS(nng_socket_set_int(s1, NNG_OPT_RECVBUF, 1));
+	NUTS_PASS(nng_socket_set_ms(s1, NNG_OPT_RECVTIMEO, SECOND));
+	NUTS_PASS(nng_socket_set_ms(s2, NNG_OPT_SENDTIMEO, SECOND));
+	NUTS_MARRY_EX(s1, s2, NULL, &p1, &p2);
+	// No new pipe should replace the one closed below.
+	NUTS_PASS(nng_dialer_set_ms(
+	    nng_pipe_dialer(p2), NNG_OPT_RECONNMAXT, 60 * SECOND));
+	NUTS_PASS(nng_dialer_set_ms(
+	    nng_pipe_dialer(p2), NNG_OPT_RECONNMINT, 60 * SECOND));
+
+	// The first message fills the receive buffer of s1.
+	NUTS_SEND(s2, "one");
+	nng_msleep(100);
+
+	// With every task thread held, the second message completes the
+	// receive of the pipe, but its callback has to wait.
+	for (int i = 0; i < TASK_THREADS; i++) {
+		NUTS_PASS(nng_aio_alloc(&aios[i], block_task, NULL));
+		nng_sleep_aio(0, aios[i]);
+	}
+	nng_mtx_lock(blocker.mtx);
+	while (blocker.started < TASK_THREADS) {
+		nng_cv_wait(blocker.cv);
+	}
+	nng_mtx_unlock(blocker.mtx);
+	NUTS_SEND(s2, "two");
+
+	// Close the pipe, and let it start stopping before the callback runs.
+	NUTS_PASS(nng_pipe_close(p1));
+	nng_msleep(100);
+	nng_mtx_lock(blocker.mtx);
+	blocker.released = true;
+	nng_cv_wake(blocker.cv);
+	nng_mtx_unlock(blocker.mtx);
+	nng_msleep(100);
+
+	// The buffered message is kept, the one still held by the pipe is
+	// dropped with it.
+	NUTS_RECV(s1, "one");
+	NUTS_FAIL(nng_recvmsg(s1, &msg, 0), NNG_ETIMEDOUT);
+
+	for (int i = 0; i < TASK_THREADS; i++) {
+		nng_aio_wait(aios[i]);
+		nng_aio_free(aios[i]);
+	}
+	NUTS_CLOSE(s1);
+	NUTS_CLOSE(s2);
+	nng_cv_free(blocker.cv);
+	nng_mtx_free(blocker.mtx);
+}
+
 NUTS_TESTS = {
 	{ "pair1 mono identity", test_mono_identity },
 	{ "pair1 mono cooked", test_mono_cooked },
@@ -686,6 +783,7 @@ NUTS_TESTS = {
 	{ "pair1 recv buffer", test_pair1_recv_buffer },
 	{ "pair1 poll readable", test_pair1_poll_readable },
 	{ "pair1 poll writable", test_pair1_poll_writable },
+	{ "pair1 recv during pipe stop", test_pair1_recv_during_pipe_stop },
 
 	{ NULL, NULL },
 };

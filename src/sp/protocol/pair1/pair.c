@@ -360,6 +360,15 @@ pair1_pipe_recv_cb(void *arg)
 
 	nni_mtx_lock(&s->mtx);
 
+	// The pipe may have been stopped while this callback was pending.
+	// Its message goes with it, as in pair1_pipe_stop.
+	if (s->p != p) {
+		nni_mtx_unlock(&s->mtx);
+		nni_aio_set_msg(&p->aio_recv, NULL);
+		nni_msg_free(msg);
+		return;
+	}
+
 	// if anyone is blocking, then the lmq will be empty, and
 	// we should deliver it there.
 	if ((a = nni_list_first(&s->raq)) != NULL) {
