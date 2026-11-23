@@ -1240,7 +1240,9 @@ nng_device_aio(nng_aio *aio, nng_socket s1, nng_socket s2)
 	}
 	if (((s2.id > 0) && (s2.id != (uint32_t) -1)) && (s2.id != s1.id)) {
 		if ((rv = nni_sock_find(&sock2, s2.id)) != 0) {
-			nni_sock_rele(sock1);
+			if (sock1 != NULL) {
+				nni_sock_rele(sock1);
+			}
 			nni_aio_finish_error(aio, rv);
 			return;
 		}

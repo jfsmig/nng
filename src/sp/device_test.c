@@ -235,6 +235,17 @@ test_device_aio(void)
 	NUTS_CLOSE(e2);
 }
 
+// A device given no first socket and a second socket that does not exist
+// must fail, not crash.
+void
+test_device_unknown_second_socket(void)
+{
+	nng_socket none    = NNG_SOCKET_INITIALIZER;
+	nng_socket unknown = { .id = 0x7ffffff0 };
+
+	NUTS_FAIL(nng_device(none, unknown), NNG_ECLOSED);
+}
+
 NUTS_TESTS = {
 	{ "device not cooked", test_device_not_cooked },
 	{ "device incompatible", test_device_incompatible },
@@ -244,5 +255,6 @@ NUTS_TESTS = {
 	{ "device forward", test_device_forward },
 	{ "device reflect", test_device_reflect },
 	{ "device aio", test_device_aio },
+	{ "device unknown second socket", test_device_unknown_second_socket },
 	{ NULL, NULL },
 };
