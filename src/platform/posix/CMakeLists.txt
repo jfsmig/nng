@@ -193,6 +193,7 @@ if (NNG_PLATFORM_POSIX)
 
     nng_test(posix_ipcwinsec_test)
     nng_test(posix_pollq_highfd_test)
+    nng_test_if(NNG_TRANSPORT_FDC posix_pollq_lowlimit_test)
     nng_test(posix_pollq_test)
 
 endif ()

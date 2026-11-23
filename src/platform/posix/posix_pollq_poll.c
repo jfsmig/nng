@@ -314,13 +314,16 @@ nni_poll_pq_create(nni_posix_pollq *pq)
 	}
 #endif
 	if (pq->nalloc == 0) {
-		// 5K files default.  If you need more, either set
-		// rlimit properly, or
+		// 5K files default.  If you need more, either keep the
+		// soft open-file limit below 1<<20, or build with
+		// NNG_MAX_OPEN.
 		pq->nalloc = 5000;
 	}
-	if (pq->nalloc < 128) { // 20 is minimum allowed per POSIX, but we need
-	                        // more for testing
-		pq->nalloc = 20;
+	if (pq->nalloc < 128) {
+		// The tables must cover every descriptor the limit allows.
+		// Keep at least 128 slots, in case a small limit is raised
+		// later.
+		pq->nalloc = 128;
 	}
 	if (((pq->pfds = NNI_ALLOC_STRUCTS(pq->pfds, pq->nalloc)) == NULL) ||
 	    ((pq->fds = NNI_ALLOC_STRUCTS(pq->fds, pq->nalloc)) == NULL)) {
