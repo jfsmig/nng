@@ -844,6 +844,42 @@ test_req_ctx_send_twice(void)
 	}
 }
 
+// A receive may be posted while the request still waits for a peer.  If
+// sending then fails, that receive has nothing left to wait for.
+void
+test_req_ctx_send_timeout_with_recv(void)
+{
+	nng_socket req;
+	nng_ctx    ctx;
+	nng_aio   *send_aio;
+	nng_aio   *recv_aio;
+	nng_msg   *msg;
+
+	NUTS_PASS(nng_req0_open(&req));
+	NUTS_PASS(nng_ctx_open(&ctx, req));
+	NUTS_PASS(nng_aio_alloc(&send_aio, NULL, NULL));
+	NUTS_PASS(nng_aio_alloc(&recv_aio, NULL, NULL));
+	nng_aio_set_timeout(send_aio, 100);
+	nng_aio_set_timeout(recv_aio, 5 * SECOND);
+	NUTS_PASS(nng_msg_alloc(&msg, 0));
+
+	// No peer, so the request cannot be sent.
+	nng_aio_set_msg(send_aio, msg);
+	nng_ctx_send(ctx, send_aio);
+	nng_ctx_recv(ctx, recv_aio);
+
+	nng_aio_wait(send_aio);
+	NUTS_FAIL(nng_aio_result(send_aio), NNG_ETIMEDOUT);
+	NUTS_TRUE(nng_aio_get_msg(send_aio) == msg);
+	nng_msg_free(msg);
+	nng_aio_wait(recv_aio);
+	NUTS_FAIL(nng_aio_result(recv_aio), NNG_ECANCELED);
+
+	nng_aio_free(send_aio);
+	nng_aio_free(recv_aio);
+	NUTS_CLOSE(req);
+}
+
 // this tests for the case where sending and receiving are started in parallel,
 // and then the receiving aio is canceled.  The sending should be errored,
 // and we should get back the original message.  This test covers bug #1702.
@@ -1080,6 +1116,8 @@ NUTS_TESTS = {
 	{ "req context send abort", test_req_ctx_send_abort },
 	{ "req context send twice", test_req_ctx_send_twice },
 	{ "req context send recv abort", test_req_ctx_send_recv_abort },
+	{ "req context send timeout with recv",
+	    test_req_ctx_send_timeout_with_recv },
 	{ "req context recv close socket", test_req_ctx_recv_close_socket },
 	{ "req context recv nonblock", test_req_ctx_recv_nonblock },
 	{ "req context send nonblock", test_req_ctx_send_nonblock },

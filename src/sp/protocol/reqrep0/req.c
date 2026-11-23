@@ -709,9 +709,13 @@ req0_ctx_cancel_send(nni_aio *aio, void *arg, nng_err rv)
 
 	nni_mtx_lock(&s->mtx);
 	if (ctx->send_aio == aio) {
-		// There should not be a pending reply, because we canceled
-		// it while we were waiting.
-		NNI_ASSERT(ctx->recv_aio == NULL);
+		// A receive may have been posted before the request went out.
+		// It has nothing left to wait for, as in req0_ctx_cancel_recv
+		// for the opposite case.
+		if (ctx->recv_aio != NULL) {
+			nni_aio_finish_error(ctx->recv_aio, NNG_ECANCELED);
+			ctx->recv_aio = NULL;
+		}
 		ctx->send_aio = NULL;
 		// Restore the message back to the aio.
 		nni_aio_set_msg(aio, ctx->req_msg);
