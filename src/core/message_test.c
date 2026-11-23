@@ -535,6 +535,23 @@ test_msg_insert_stress(void)
 	}
 }
 
+// Sizes close to SIZE_MAX must be refused, rather than wrap around to a
+// small buffer behind a huge length.
+void
+test_msg_size_overflow(void)
+{
+	nng_msg *msg;
+
+	NUTS_FAIL(nng_msg_alloc(&msg, SIZE_MAX - 16), NNG_ENOMEM);
+
+	NUTS_PASS(nng_msg_alloc(&msg, 10));
+	NUTS_FAIL(nng_msg_realloc(msg, SIZE_MAX - 8), NNG_ENOMEM);
+	NUTS_ASSERT(nng_msg_len(msg) == 10);
+	NUTS_FAIL(nng_msg_reserve(msg, SIZE_MAX - 8), NNG_ENOMEM);
+	NUTS_ASSERT(nng_msg_len(msg) == 10);
+	nng_msg_free(msg);
+}
+
 TEST_LIST = {
 	{ "msg option", test_msg_option },
 	{ "msg empty", test_msg_empty },
@@ -563,5 +580,6 @@ TEST_LIST = {
 	{ "msg capacity", test_msg_capacity },
 	{ "msg reserve", test_msg_reserve },
 	{ "msg insert stress", test_msg_insert_stress },
+	{ "msg size overflow", test_msg_size_overflow },
 	{ NULL, NULL },
 };

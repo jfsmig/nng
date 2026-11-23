@@ -123,6 +123,9 @@ nni_chunk_grow(nni_chunk *ch, size_t newsz, size_t headwanted)
 		if (headwanted < headroom) {
 			headwanted = headroom; // Never shrink this.
 		}
+		if (headwanted > (SIZE_MAX - newsz)) {
+			return (NNG_ENOMEM);
+		}
 		if (((newsz + headwanted) <= ch->ch_cap) &&
 		    (headwanted <= headroom)) {
 			// We have enough space at the ends already.
@@ -416,6 +419,10 @@ nni_msg_alloc(nni_msg **mp, size_t sz)
 	nni_msg *m;
 	int      rv;
 
+	// Adding the 32 bytes of room below must not wrap the size.
+	if (sz > (SIZE_MAX - 32)) {
+		return (NNG_ENOMEM);
+	}
 	if ((m = NNI_ALLOC_STRUCT(m)) == NULL) {
 		return (NNG_ENOMEM);
 	}
