@@ -63,18 +63,26 @@ wstran_pipe_send_cb(void *arg)
 	ws_pipe *p    = arg;
 	nni_aio *taio = &p->txaio;
 	nni_aio *uaio;
+	nng_err  rv;
 
 	nni_mtx_lock(&p->mtx);
 	uaio          = p->user_txaio;
 	p->user_txaio = NULL;
 
-	if (uaio != NULL) {
-		nng_err rv;
-		if ((rv = nni_aio_result(taio)) != NNG_OK) {
+	if ((rv = nni_aio_result(taio)) != NNG_OK) {
+		// The message was not sent, and the stream left it with us.
+		// Give it back to the caller, or drop it if the send was
+		// canceled already.
+		nni_msg *msg = nni_aio_get_msg(taio);
+		nni_aio_set_msg(taio, NULL);
+		if (uaio != NULL) {
+			nni_aio_set_msg(uaio, msg);
 			nni_aio_finish_error(uaio, rv);
-		} else {
-			nni_aio_finish(uaio, 0, 0);
+		} else if (msg != NULL) {
+			nni_msg_free(msg);
 		}
+	} else if (uaio != NULL) {
+		nni_aio_finish(uaio, 0, 0);
 	}
 	nni_mtx_unlock(&p->mtx);
 }

@@ -516,6 +516,45 @@ test_ws_props_v4(void)
 NUTS_DECLARE_TRAN_TESTS(ws)
 NUTS_DECLARE_TRAN_TESTS(ws6)
 
+// A message whose send fails, here because the pipe closes while the
+// peer does not read, must not be lost along the way (leak).
+void
+test_ws_send_fails_in_flight(void)
+{
+	nng_socket   s0;
+	nng_socket   s1;
+	nng_listener l;
+	nng_msg     *msg;
+	char         url[256];
+	int          port;
+	int          rv = NNG_OK;
+
+	NUTS_PASS(nng_pair1_open(&s0));
+	NUTS_PASS(nng_pair1_open(&s1));
+	NUTS_PASS(nng_socket_set_int(s0, NNG_OPT_RECVBUF, 1));
+	NUTS_PASS(nng_socket_set_ms(s1, NNG_OPT_SENDTIMEO, 200));
+	(void) snprintf(url, sizeof(url), "ws://127.0.0.1:0/ws_in_flight");
+	NUTS_PASS(nng_listener_create(&l, s0, url));
+	NUTS_PASS(nng_listener_start(l, 0));
+	NUTS_PASS(nng_listener_get_int(l, NNG_OPT_BOUND_PORT, &port));
+	(void) snprintf(
+	    url, sizeof(url), "ws://127.0.0.1:%d/ws_in_flight", port);
+	NUTS_PASS(nng_dial(s1, url, NULL, 0));
+
+	// s0 never receives, so sending eventually blocks, with a message
+	// still being written to the connection.
+	for (int i = 0; (i < 200) && (rv == NNG_OK); i++) {
+		NUTS_PASS(nng_msg_alloc(&msg, 256 * 1024));
+		if ((rv = nng_sendmsg(s1, msg, 0)) != NNG_OK) {
+			nng_msg_free(msg);
+		}
+	}
+	NUTS_FAIL(rv, NNG_ETIMEDOUT);
+
+	NUTS_CLOSE(s1);
+	NUTS_CLOSE(s0);
+}
+
 TEST_LIST = {
 	{ "ws dialer bind", test_ws_dialer_bind },
 	{ "ws url path filters", test_ws_url_path_filters },
@@ -525,6 +564,7 @@ TEST_LIST = {
 	{ "ws wild card host", test_wild_card_host },
 	{ "ws empty host", test_empty_host },
 	{ "ws recv max", test_ws_recv_max },
+	{ "ws send fails in flight", test_ws_send_fails_in_flight },
 	{ "ws no tls", test_ws_no_tls },
 	NUTS_INSERT_TRAN_TESTS(ws),
 	{ "ws msg props", test_ws_props_v4 },
