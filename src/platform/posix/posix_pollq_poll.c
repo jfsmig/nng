@@ -171,13 +171,14 @@ nni_poll_thr(void *arg)
 
 		// The waker pipe is set up so that we will be woken
 		// when it is written (this allows us to be signaled).
-		fds[0].fd         = pq->wakerfd;
-		fds[0].events     = POLLIN;
-		fds[0].revents    = 0;
-		pfds[pq->wakerfd] = NULL;
-		nfds              = 1;
+		fds[0].fd      = pq->wakerfd;
+		fds[0].events  = POLLIN;
+		fds[0].revents = 0;
+		pfds[0]        = NULL;
+		nfds           = 1;
 
-		// Set up the poll list.
+		// Set up the poll list.  pfds[] follows fds[] by position,
+		// because descriptor numbers can exceed the size of the table.
 		NNI_LIST_FOREACH (&pq->pollq, pfd) {
 
 			events = nni_atomic_get(&pfd->events);
@@ -186,6 +187,7 @@ nni_poll_thr(void *arg)
 				fds[nfds].fd      = pfd->fd;
 				fds[nfds].events  = (unsigned) events;
 				fds[nfds].revents = 0;
+				pfds[nfds]        = pfd;
 				nfds++;
 			}
 		}
@@ -205,7 +207,7 @@ nni_poll_thr(void *arg)
 		for (int i = 0; i < nfds; i++) {
 			int fd = fds[i].fd;
 			events = (int) fds[i].revents;
-			pfd    = pfds[fd];
+			pfd    = pfds[i];
 			if (events == 0) {
 				continue;
 			}
@@ -237,14 +239,12 @@ nni_poll_thr(void *arg)
 			while ((pfd = nni_list_first(&pq->addq)) != NULL) {
 				nni_list_remove(&pq->addq, pfd);
 				nni_list_append(&pq->pollq, pfd);
-				pfds[pfd->fd] = pfd;
 			}
 			// then reaps
 			while ((pfd = nni_list_first(&pq->reapq)) != NULL) {
 				nni_list_node_remove(&pfd->node);
 				nni_list_node_remove(&pfd->reap);
-				pfd->reaped   = true;
-				pfds[pfd->fd] = NULL;
+				pfd->reaped = true;
 			}
 			nni_cv_wake(&pq->cv);
 			nni_mtx_unlock(&pq->mtx);
@@ -257,8 +257,7 @@ nni_poll_thr(void *arg)
 	    ((pfd = nni_list_first(&pq->pollq)) != NULL)) {
 		nni_list_node_remove(&pfd->node);
 		nni_list_node_remove(&pfd->reap);
-		pfd->reaped   = true;
-		pfds[pfd->fd] = NULL;
+		pfd->reaped = true;
 	}
 	nni_cv_wake(&pq->cv);
 	nni_mtx_unlock(&pq->mtx);

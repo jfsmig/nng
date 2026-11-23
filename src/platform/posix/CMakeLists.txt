@@ -192,5 +192,6 @@ if (NNG_PLATFORM_POSIX)
     endif ()
 
     nng_test(posix_ipcwinsec_test)
+    nng_test(posix_pollq_highfd_test)
 
 endif ()
