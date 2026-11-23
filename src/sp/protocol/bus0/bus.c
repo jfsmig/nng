@@ -305,9 +305,6 @@ bus0_sock_send(void *arg, nni_aio *aio)
 	len = nni_msg_len(msg);
 	nni_aio_set_msg(aio, NULL);
 
-	// this test is so that we detect when the aio itself is terminated,
-	// otherwise we could loop forever.
-
 	if (s->raw) {
 		// In raw mode, we look for the message header, to see if it
 		// is being resent from another pipe (e.g. via a device).
@@ -320,12 +317,10 @@ bus0_sock_send(void *arg, nni_aio *aio)
 		nni_msg_header_clear(msg);
 	}
 
+	// Sending never waits: the message is queued or dropped for each
+	// pipe right away, so there is nothing to start or time out.  A
+	// stopped aio still completes with NNG_ESTOPPED.
 	nni_mtx_lock(&s->mtx);
-
-	if (!nni_aio_start(aio, NULL, NULL)) {
-		nni_mtx_unlock(&s->mtx);
-		return;
-	}
 
 	if (nni_list_empty(&s->pipes)) {
 		BUMP_STAT(&s->stat_tx_nopipe);

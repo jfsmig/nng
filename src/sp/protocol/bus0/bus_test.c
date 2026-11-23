@@ -77,6 +77,28 @@ test_bus_star(void)
 	NUTS_CLOSE(s3);
 }
 
+// Sending never waits on a bus socket, so a non-blocking send, or one with
+// a zero timeout, must go out like any other.
+static void
+test_bus_send_nonblock(void)
+{
+	nng_socket s1, s2;
+
+	NUTS_PASS(nng_bus0_open(&s1));
+	NUTS_PASS(nng_bus0_open(&s2));
+	NUTS_PASS(nng_socket_set_ms(s2, NNG_OPT_RECVTIMEO, SECOND));
+	NUTS_MARRY(s1, s2);
+
+	NUTS_PASS(nng_send(s1, "one", 4, NNG_FLAG_NONBLOCK));
+	NUTS_RECV(s2, "one");
+	NUTS_PASS(nng_socket_set_ms(s1, NNG_OPT_SENDTIMEO, 0));
+	NUTS_SEND(s1, "two");
+	NUTS_RECV(s2, "two");
+
+	NUTS_CLOSE(s1);
+	NUTS_CLOSE(s2);
+}
+
 static void
 test_bus_device(void)
 {
@@ -211,6 +233,7 @@ test_bus_aio_stopped(void)
 	nng_aio_wait(aio1);
 	NUTS_FAIL(nng_aio_result(aio1), NNG_ESTOPPED);
 
+	// Sending never waits, so the message is consumed as for any send.
 	nng_aio_set_msg(aio2, msg);
 	nng_socket_send(s1, aio2);
 	nng_aio_wait(aio2);
@@ -218,7 +241,6 @@ test_bus_aio_stopped(void)
 
 	nng_aio_free(aio1);
 	nng_aio_free(aio2);
-	nng_msg_free(msg);
 	NUTS_CLOSE(s1);
 }
 
@@ -544,6 +566,7 @@ TEST_LIST = {
 	{ "bus stats", test_bus_stats },
 	{ "bus identity", test_bus_identity },
 	{ "bus star", test_bus_star },
+	{ "bus send nonblock", test_bus_send_nonblock },
 	{ "bus device", test_bus_device },
 	{ "bus validate peer", test_bus_validate_peer },
 	{ "bus no context", test_bus_no_context },
