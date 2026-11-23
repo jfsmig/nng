@@ -556,6 +556,98 @@ test_push_stats(void)
 #endif
 }
 
+// Holding every task thread delays the completion callbacks of the pipes,
+// so that a test can let them run after a pipe has been closed.
+#define TASK_THREADS 2 // the fewest the library runs
+
+static struct {
+	nng_mtx *mtx;
+	nng_cv  *cv;
+	int      started;
+	bool     released;
+} blocker;
+
+static void
+block_task(void *arg)
+{
+	(void) arg;
+	nng_mtx_lock(blocker.mtx);
+	blocker.started++;
+	nng_cv_wake(blocker.cv);
+	while (!blocker.released) {
+		nng_cv_wait(blocker.cv);
+	}
+	nng_mtx_unlock(blocker.mtx);
+}
+
+// A send that completes on a pipe being closed must not make that pipe
+// ready for more messages.
+static void
+test_push_send_done_during_pipe_close(void)
+{
+	nng_init_params params = { 0 };
+	nng_socket      s1;
+	nng_socket      s2;
+	nng_pipe        p1;
+	nng_pipe        p2;
+	nng_aio        *aios[TASK_THREADS];
+
+	params.num_task_threads = TASK_THREADS;
+	params.max_task_threads = TASK_THREADS;
+	nng_fini();
+	NUTS_PASS(nng_init(&params));
+	NUTS_PASS(nng_mtx_alloc(&blocker.mtx));
+	NUTS_PASS(nng_cv_alloc(&blocker.cv, blocker.mtx));
+
+	NUTS_PASS(nng_push0_open(&s1));
+	NUTS_PASS(nng_pull0_open(&s2));
+	NUTS_PASS(nng_socket_set_ms(s1, NNG_OPT_SENDTIMEO, 1000));
+	NUTS_PASS(nng_socket_set_ms(s2, NNG_OPT_RECVTIMEO, 1000));
+	NUTS_MARRY_EX(s1, s2, NULL, &p1, &p2);
+	// No new pipe should replace the one closed below.
+	NUTS_PASS(
+	    nng_dialer_set_ms(nng_pipe_dialer(p2), NNG_OPT_RECONNMAXT, 60000));
+	NUTS_PASS(
+	    nng_dialer_set_ms(nng_pipe_dialer(p2), NNG_OPT_RECONNMINT, 60000));
+
+	NUTS_SEND(s1, "one");
+	NUTS_RECV(s2, "one");
+
+	// With every task thread held, the second message is sent, but the
+	// callback of that send has to wait.
+	for (int i = 0; i < TASK_THREADS; i++) {
+		NUTS_PASS(nng_aio_alloc(&aios[i], block_task, NULL));
+		nng_sleep_aio(0, aios[i]);
+	}
+	nng_mtx_lock(blocker.mtx);
+	while (blocker.started < TASK_THREADS) {
+		nng_cv_wait(blocker.cv);
+	}
+	nng_mtx_unlock(blocker.mtx);
+	NUTS_SEND(s1, "two");
+
+	// Close the pipe, and let the send callback run while it stops.
+	NUTS_PASS(nng_pipe_close(p1));
+	nng_msleep(100);
+	nng_mtx_lock(blocker.mtx);
+	blocker.released = true;
+	nng_cv_wake(blocker.cv);
+	nng_mtx_unlock(blocker.mtx);
+	nng_msleep(100);
+
+	// No pipe is left to send to.
+	NUTS_FAIL(nng_send(s1, "three", 6, NNG_FLAG_NONBLOCK), NNG_EAGAIN);
+
+	for (int i = 0; i < TASK_THREADS; i++) {
+		nng_aio_wait(aios[i]);
+		nng_aio_free(aios[i]);
+	}
+	NUTS_CLOSE(s1);
+	NUTS_CLOSE(s2);
+	nng_cv_free(blocker.cv);
+	nng_mtx_free(blocker.mtx);
+}
+
 TEST_LIST = {
 	{ "push stats", test_push_stats },
 	{ "push identity", test_push_identity },
@@ -577,5 +669,7 @@ TEST_LIST = {
 	{ "push load balance buffered", test_push_load_balance_buffered },
 	{ "push load balance unbuffered", test_push_load_balance_unbuffered },
 	{ "push send buffer", test_push_send_buffer },
+	{ "push send done during pipe close",
+	    test_push_send_done_during_pipe_close },
 	{ NULL, NULL },
 };

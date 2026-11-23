@@ -64,6 +64,7 @@ struct push0_pipe {
 	nni_pipe     *pipe;
 	push0_sock   *push;
 	nni_list_node node;
+	bool          closed; // protected by the socket lock
 
 	nni_aio aio_recv;
 	nni_aio aio_send;
@@ -189,6 +190,7 @@ push0_pipe_close(void *arg)
 	nni_aio_close(&p->aio_send);
 
 	nni_mtx_lock(&s->m);
+	p->closed = true;
 	if (nni_list_node_active(&p->node)) {
 		nni_list_node_remove(&p->node);
 
@@ -225,6 +227,13 @@ push0_pipe_ready(push0_pipe *p)
 	bool        blocked;
 
 	nni_mtx_lock(&s->m);
+
+	// A send may complete after its pipe was closed.  The pipe must not
+	// be used again.
+	if (p->closed) {
+		nni_mtx_unlock(&s->m);
+		return;
+	}
 
 	blocked = nni_lmq_full(&s->wq) && nni_list_empty(&s->pl);
 
