@@ -2723,6 +2723,8 @@ ws_dialer_dial(void *arg, nni_aio *aio)
 	ws->useraio   = aio;
 	ws->server    = false;
 	ws->maxframe  = d->maxframe;
+	ws->fragsize  = d->fragsize;
+	ws->recvmax   = d->recvmax;
 	ws->isstream  = d->isstream;
 	ws->recv_text = d->recv_text;
 	ws->send_text = d->send_text;

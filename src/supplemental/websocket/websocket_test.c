@@ -559,6 +559,127 @@ test_websocket_frame_limit(void)
 	nng_stream_dialer_free(d);
 }
 
+static void
+ws_connect(nng_stream_listener *l, nng_stream_dialer *d, nng_stream **sp,
+    nng_stream **cp)
+{
+	nng_aio *laio;
+	nng_aio *daio;
+
+	NUTS_PASS(nng_aio_alloc(&laio, NULL, NULL));
+	NUTS_PASS(nng_aio_alloc(&daio, NULL, NULL));
+	nng_aio_set_timeout(laio, 5000);
+	nng_aio_set_timeout(daio, 5000);
+	nng_stream_listener_accept(l, laio);
+	nng_stream_dialer_dial(d, daio);
+	nng_aio_wait(laio);
+	nng_aio_wait(daio);
+	NUTS_PASS(nng_aio_result(laio));
+	NUTS_PASS(nng_aio_result(daio));
+	*sp = nng_aio_get_output(laio, 0);
+	*cp = nng_aio_get_output(daio, 0);
+	nng_aio_free(laio);
+	nng_aio_free(daio);
+}
+
+static void
+ws_disconnect(nng_stream *s, nng_stream *c)
+{
+	nng_stream_close(c);
+	nng_stream_free(c);
+	nng_stream_close(s);
+	nng_stream_free(s);
+}
+
+// The dialer applies its message size limits to the connections it makes,
+// as the listener does.
+void
+test_websocket_dialer_limits(void)
+{
+	nng_stream_listener *l = NULL;
+	nng_stream_dialer   *d = NULL;
+	nng_stream          *c;
+	nng_stream          *s;
+	nng_aio             *raio;
+	nng_aio             *saio;
+	nng_msg             *msg;
+	char                 url[64];
+	uint16_t             port;
+	int                  rv;
+
+	NUTS_PASS(nng_aio_alloc(&raio, NULL, NULL));
+	NUTS_PASS(nng_aio_alloc(&saio, NULL, NULL));
+	nng_aio_set_timeout(raio, 5000);
+	nng_aio_set_timeout(saio, 5000);
+
+	for (int i = 0; i < 256; i++) {
+		port = nuts_next_port();
+		(void) snprintf(
+		    url, sizeof(url), "ws://127.0.0.1:%d/test", port);
+		NUTS_PASS(nng_stream_listener_alloc(&l, url));
+		NUTS_PASS(nng_stream_dialer_alloc(&d, url));
+		NUTS_PASS(
+		    nng_stream_listener_set_bool(l, NNI_OPT_WS_MSGMODE, true));
+		NUTS_PASS(
+		    nng_stream_dialer_set_bool(d, NNI_OPT_WS_MSGMODE, true));
+		NUTS_PASS(nng_stream_listener_set_size(
+		    l, NNG_OPT_WS_RECVMAXFRAME, 65536));
+		NUTS_PASS(
+		    nng_stream_dialer_set_size(d, NNG_OPT_RECVMAXSZ, 1024));
+		rv = nng_stream_listener_listen(l);
+		if (rv != NNG_EADDRINUSE) {
+			break;
+		}
+		nng_stream_listener_free(l);
+		nng_stream_dialer_free(d);
+	}
+	NUTS_PASS(rv);
+
+	// A message larger than the receive limit of the dialer closes the
+	// connection.
+	ws_connect(l, d, &s, &c);
+	NUTS_PASS(nng_msg_alloc(&msg, 4096));
+	nng_aio_set_msg(saio, msg);
+	nng_stream_recv(c, raio);
+	nng_stream_send(s, saio);
+	nng_aio_wait(raio);
+	NUTS_FAIL(nng_aio_result(raio), NNG_ECLOSED);
+	if ((msg = nng_aio_get_msg(raio)) != NULL) {
+		nng_aio_set_msg(raio, NULL);
+		nng_msg_free(msg);
+	}
+	nng_aio_wait(saio);
+	if ((msg = nng_aio_get_msg(saio)) != NULL) {
+		nng_aio_set_msg(saio, NULL);
+		nng_msg_free(msg);
+	}
+	ws_disconnect(s, c);
+
+	// The dialer splits what it sends at its fragment size (64 KB by
+	// default), which the listener accepts.
+	ws_connect(l, d, &s, &c);
+	NUTS_PASS(nng_msg_alloc(&msg, 100000));
+	memset(nng_msg_body(msg), 'A', 100000);
+	nng_aio_set_msg(saio, msg);
+	nng_stream_recv(s, raio);
+	nng_stream_send(c, saio);
+	nng_aio_wait(saio);
+	NUTS_PASS(nng_aio_result(saio));
+	nng_aio_wait(raio);
+	NUTS_PASS(nng_aio_result(raio));
+	msg = nng_aio_get_msg(raio);
+	NUTS_ASSERT(msg != NULL);
+	NUTS_TRUE(nng_msg_len(msg) == 100000);
+	nng_aio_set_msg(raio, NULL);
+	nng_msg_free(msg);
+	ws_disconnect(s, c);
+
+	nng_aio_free(saio);
+	nng_aio_free(raio);
+	nng_stream_listener_free(l);
+	nng_stream_dialer_free(d);
+}
+
 typedef struct recv_state {
 	nng_stream  *c;
 	int          total;
@@ -1038,6 +1159,7 @@ NUTS_TESTS = {
 	{ "websocket text mode", test_websocket_text_mode },
 	{ "websocket text rejected", test_websocket_text_rejected },
 	{ "websocket frame limit", test_websocket_frame_limit },
+	{ "websocket dialer limits", test_websocket_dialer_limits },
 	{ "websocket send cancel cleanup",
 	    test_websocket_send_cancel_cleanup },
 	{ "websocket listener pending cleanup",
