@@ -17,6 +17,14 @@
 
 #include "../../testing/nuts.h"
 
+#ifdef NNG_PLATFORM_POSIX
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
+
 void
 test_websocket_wildcard(void)
 {
@@ -559,6 +567,120 @@ test_websocket_frame_limit(void)
 	nng_stream_dialer_free(d);
 }
 
+// Control frames still queued when the close frame goes out are dropped,
+// and must be freed.  A raw client gets the server to queue replies to its
+// PINGs behind a large message it does not read, then reads everything
+// once the server closes.
+void
+test_websocket_close_drops_queued_control(void)
+{
+#ifdef NNG_PLATFORM_POSIX
+	nng_stream_listener *l = NULL;
+	nng_stream          *s;
+	nng_aio             *laio;
+	nng_aio             *saio;
+	nng_aio             *raio;
+	nng_msg             *msg;
+	struct sockaddr_in   sin;
+	struct timeval       tv;
+	char                 url[64];
+	char                 req[256];
+	char                 buf[65536];
+	size_t               len  = 0;
+	uint16_t             port = 0;
+	int                  fd;
+	int                  rv;
+	// Masked PING frame (key 0), with a 4 byte payload.
+	const uint8_t ping[] = { 0x89, 0x84, 0, 0, 0, 0, 'p', 'i', 'n', 'g' };
+
+	NUTS_PASS(nng_aio_alloc(&laio, NULL, NULL));
+	NUTS_PASS(nng_aio_alloc(&saio, NULL, NULL));
+	NUTS_PASS(nng_aio_alloc(&raio, NULL, NULL));
+	nng_aio_set_timeout(laio, 5000);
+	for (int i = 0; i < 256; i++) {
+		port = nuts_next_port();
+		(void) snprintf(
+		    url, sizeof(url), "ws://127.0.0.1:%d/test", port);
+		NUTS_PASS(nng_stream_listener_alloc(&l, url));
+		// In message mode, a message goes out as successive frames.
+		NUTS_PASS(
+		    nng_stream_listener_set_bool(l, NNI_OPT_WS_MSGMODE, true));
+		if ((rv = nng_stream_listener_listen(l)) != NNG_EADDRINUSE) {
+			break;
+		}
+		nng_stream_listener_free(l);
+	}
+	NUTS_PASS(rv);
+	nng_stream_listener_accept(l, laio);
+
+	NUTS_ASSERT((fd = socket(AF_INET, SOCK_STREAM, 0)) >= 0);
+	tv.tv_sec  = 5;
+	tv.tv_usec = 0;
+	NUTS_ASSERT(
+	    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0);
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family      = AF_INET;
+	sin.sin_port        = htons(port);
+	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	NUTS_ASSERT(connect(fd, (void *) &sin, sizeof(sin)) == 0);
+	(void) snprintf(req, sizeof(req),
+	    "GET /test HTTP/1.1\r\n"
+	    "Host: 127.0.0.1:%d\r\n"
+	    "Upgrade: websocket\r\n"
+	    "Connection: Upgrade\r\n"
+	    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+	    "Sec-WebSocket-Version: 13\r\n\r\n",
+	    port);
+	NUTS_ASSERT(send(fd, req, strlen(req), 0) == (ssize_t) strlen(req));
+	while ((len < 4) || (memcmp(buf + len - 4, "\r\n\r\n", 4) != 0)) {
+		NUTS_ASSERT(len < sizeof(buf));
+		NUTS_ASSERT(recv(fd, buf + len, 1, 0) == 1);
+		len++;
+	}
+	NUTS_ASSERT(memcmp(buf, "HTTP/1.1 101", 12) == 0);
+	nng_aio_wait(laio);
+	NUTS_PASS(nng_aio_result(laio));
+	s = nng_aio_get_output(laio, 0);
+
+	// The server reads only while a receive is pending.
+	nng_stream_recv(s, raio);
+
+	// The client does not read, so the server is stuck writing this.
+	NUTS_PASS(nng_msg_alloc(&msg, 16 * 1024 * 1024));
+	memset(nng_msg_body(msg), 'A', nng_msg_len(msg));
+	nng_aio_set_msg(saio, msg);
+	nng_stream_send(s, saio);
+	nng_msleep(100);
+
+	// Replies to these are queued behind the message being written.
+	NUTS_ASSERT(send(fd, ping, sizeof(ping), 0) == sizeof(ping));
+	NUTS_ASSERT(send(fd, ping, sizeof(ping), 0) == sizeof(ping));
+	nng_msleep(100);
+
+	// Close, then read everything quickly, so that the close frame is
+	// written before the close times out.
+	nng_stream_close(s);
+	while (recv(fd, buf, sizeof(buf), 0) > 0) {
+		continue;
+	}
+	nng_aio_wait(saio);
+	nng_aio_wait(raio);
+	if ((msg = nng_aio_get_msg(saio)) != NULL) {
+		nng_aio_set_msg(saio, NULL);
+		nng_msg_free(msg);
+	}
+
+	(void) close(fd);
+	nng_stream_free(s);
+	nng_aio_free(raio);
+	nng_aio_free(saio);
+	nng_aio_free(laio);
+	nng_stream_listener_free(l);
+#else
+	NUTS_SKIP("POSIX only");
+#endif
+}
+
 typedef struct recv_state {
 	nng_stream  *c;
 	int          total;
@@ -1038,6 +1160,8 @@ NUTS_TESTS = {
 	{ "websocket text mode", test_websocket_text_mode },
 	{ "websocket text rejected", test_websocket_text_rejected },
 	{ "websocket frame limit", test_websocket_frame_limit },
+	{ "websocket close drops queued control",
+	    test_websocket_close_drops_queued_control },
 	{ "websocket send cancel cleanup",
 	    test_websocket_send_cancel_cleanup },
 	{ "websocket listener pending cleanup",

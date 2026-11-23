@@ -717,8 +717,9 @@ ws_write_cb(void *arg)
 				frame->aio = NULL;
 				nni_aio_list_remove(aio);
 				nni_aio_finish_error(aio, NNG_ECLOSED);
-				ws_frame_fini(frame);
 			}
+			// Control frames have no aio, and are freed too.
+			ws_frame_fini(frame);
 		}
 		if (ws->peer_closed && ws->wclose) {
 			ws->wclose = false;
