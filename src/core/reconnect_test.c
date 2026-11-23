@@ -177,10 +177,59 @@ test_reconnect_back_off_zero(void)
 	NUTS_CLOSE(s2);
 }
 
+static struct {
+	nng_mtx *mtx;
+	int      count;
+} completions;
+
+static void
+count_completion(void *arg)
+{
+	(void) arg;
+	nng_mtx_lock(completions.mtx);
+	completions.count++;
+	nng_mtx_unlock(completions.mtx);
+}
+
+// A dialer started with an aio that fails to start, here because of a zero
+// timeout, must complete that aio once, and stay stopped.
+void
+test_dialer_start_aio_zero_timeout(void)
+{
+	nng_socket s;
+	nng_dialer d;
+	nng_aio   *aio;
+	char      *addr;
+
+	NUTS_PASS(nng_mtx_alloc(&completions.mtx));
+	NUTS_PASS(nng_pair1_open(&s));
+	NUTS_ADDR(addr, "inproc");
+	NUTS_PASS(nng_dialer_create(&d, s, addr));
+	NUTS_PASS(nng_aio_alloc(&aio, count_completion, NULL));
+	nng_aio_set_timeout(aio, NNG_DURATION_ZERO);
+
+	nng_dialer_start_aio(d, NNG_FLAG_NONBLOCK, aio);
+	nng_aio_wait(aio);
+	NUTS_FAIL(nng_aio_result(aio), NNG_ETIMEDOUT);
+	// Nothing listens, so a connection attempt would fail right away.
+	nng_msleep(200);
+	nng_mtx_lock(completions.mtx);
+	NUTS_TRUE(completions.count == 1);
+	nng_mtx_unlock(completions.mtx);
+
+	NUTS_PASS(nng_dialer_start(d, NNG_FLAG_NONBLOCK));
+
+	NUTS_CLOSE(s);
+	nng_aio_free(aio);
+	nng_mtx_free(completions.mtx);
+}
+
 NUTS_TESTS = {
 	{ "dial before listen", test_dial_before_listen },
 	{ "reconnect", test_reconnect },
 	{ "reconnect back-off zero", test_reconnect_back_off_zero },
 	{ "reconnect pipe", test_reconnect_pipe },
+	{ "dialer start aio zero timeout",
+	    test_dialer_start_aio_zero_timeout },
 	{ NULL, NULL },
 };

@@ -486,8 +486,11 @@ nni_dialer_start_aio(nni_dialer *d, unsigned flags, nni_aio *aiop)
 		return (NNG_ESTATE);
 	}
 
-	if (aiop != NULL) {
-		nni_aio_start(aiop, NULL, NULL);
+	// If the aio cannot start, it has already completed with an error,
+	// and the dialer stays stopped.
+	if ((aiop != NULL) && !nni_aio_start(aiop, NULL, NULL)) {
+		nni_atomic_flag_reset(&d->d_started);
+		return (0);
 	}
 
 	// Note that flags is currently unused, since the only flag is
