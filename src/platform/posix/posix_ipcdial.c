@@ -213,9 +213,11 @@ ipc_dialer_dial(void *arg, nni_aio *aio)
 #endif
 
 	{
-		if (errno != EINPROGRESS && errno != EAGAIN) {
-			if (errno == ENOENT) {
+		if (errno != EINPROGRESS) {
+			if ((errno == ENOENT) || (errno == EAGAIN)) {
 				// No socket present means nobody listening.
+				// EAGAIN means that the listener's backlog is
+				// full (Linux): nothing is in progress then.
 				rv = NNG_ECONNREFUSED;
 			} else {
 				rv = nni_plat_errno(errno);

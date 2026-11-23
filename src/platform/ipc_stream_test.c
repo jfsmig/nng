@@ -16,6 +16,14 @@
 
 #include <nng/nng.h>
 
+#ifdef __linux__
+#include <errno.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#endif
+
 #include "../../src/testing/nuts.h"
 
 static void
@@ -445,11 +453,68 @@ test_ipc_stream_iov_exceeds_int_max(void)
 #endif
 }
 
+// On Linux, a non-blocking connect to a UNIX socket whose backlog is full
+// fails with EAGAIN.  No connection is in progress then, so the dial must
+// fail rather than wait.
+void
+test_ipc_dial_backlog_full(void)
+{
+#ifdef __linux__
+	struct sockaddr_un sun;
+	nng_stream_dialer *d;
+	nng_aio           *aio;
+	char              *url;
+	int                lfd;
+	int                cfds[64];
+	int                n = 0;
+
+	NUTS_ADDR(url, "ipc");
+	memset(&sun, 0, sizeof(sun));
+	sun.sun_family = AF_UNIX;
+	(void) snprintf(
+	    sun.sun_path, sizeof(sun.sun_path), "%s", url + strlen("ipc://"));
+	NUTS_ASSERT((lfd = socket(AF_UNIX, SOCK_STREAM, 0)) >= 0);
+	NUTS_ASSERT(bind(lfd, (void *) &sun, sizeof(sun)) == 0);
+	NUTS_ASSERT(listen(lfd, 0) == 0);
+
+	// Fill the backlog of a listener that never accepts.
+	for (;;) {
+		int fd;
+		NUTS_ASSERT(n < 64);
+		fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+		NUTS_ASSERT(fd >= 0);
+		cfds[n++] = fd;
+		if (connect(fd, (void *) &sun, sizeof(sun)) != 0) {
+			NUTS_ASSERT(errno == EAGAIN);
+			break;
+		}
+	}
+
+	NUTS_PASS(nng_aio_alloc(&aio, NULL, NULL));
+	nng_aio_set_timeout(aio, 1000);
+	NUTS_PASS(nng_stream_dialer_alloc(&d, url));
+	nng_stream_dialer_dial(d, aio);
+	nng_aio_wait(aio);
+	NUTS_FAIL(nng_aio_result(aio), NNG_ECONNREFUSED);
+
+	nng_stream_dialer_free(d);
+	nng_aio_free(aio);
+	for (int i = 0; i < n; i++) {
+		(void) close(cfds[i]);
+	}
+	(void) close(lfd);
+	(void) unlink(sun.sun_path);
+#else
+	NUTS_SKIP("Linux only");
+#endif
+}
+
 NUTS_TESTS = {
 	{ "ipc stream", test_ipc_stream },
 	{ "unix stream", test_unix_stream },
 	{ "winpipe stream", test_winpipe_stream },
 	{ "ipc no connect", test_ipc_no_connect },
+	{ "ipc dial backlog full", test_ipc_dial_backlog_full },
 	{ "ipc socket activation", test_ipc_listen_activation },
 	{ "ipc socket activation busy", test_ipc_listen_activation_busy },
 	{ "ipc socket activation closed", test_ipc_listen_activation_closed },
