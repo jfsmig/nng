@@ -192,5 +192,6 @@ if (NNG_PLATFORM_POSIX)
     endif ()
 
     nng_test(posix_ipcwinsec_test)
+    nng_test(posix_stream_close_test)
 
 endif ()

@@ -259,6 +259,11 @@ ipc_send(void *arg, nni_aio *aio)
 	nni_aio_reset(aio);
 	nni_mtx_lock(&c->mtx);
 
+	if (c->closed) {
+		nni_mtx_unlock(&c->mtx);
+		nni_aio_finish_error(aio, NNG_ECLOSED);
+		return;
+	}
 	if (!nni_aio_start(aio, ipc_cancel, c)) {
 		nni_mtx_unlock(&c->mtx);
 		return;
@@ -285,6 +290,11 @@ ipc_recv(void *arg, nni_aio *aio)
 	nni_aio_reset(aio);
 	nni_mtx_lock(&c->mtx);
 
+	if (c->closed) {
+		nni_mtx_unlock(&c->mtx);
+		nni_aio_finish_error(aio, NNG_ECLOSED);
+		return;
+	}
 	if (!nni_aio_start(aio, ipc_cancel, c)) {
 		nni_mtx_unlock(&c->mtx);
 		return;
