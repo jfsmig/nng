@@ -144,14 +144,32 @@ nni_plat_file_get(const char *name, void **datap, size_t *lenp)
 
 	len = st.st_size;
 	if (len > 0) {
+		size_t n;
 		if ((data = nni_alloc(len)) == NULL) {
 			rv = NNG_ENOMEM;
 			goto done;
 		}
-		if (fread(data, 1, len, f) != len) {
+		n = fread(data, 1, len, f);
+		if (ferror(f)) {
 			rv = nni_plat_errno(errno);
 			nni_free(data, len);
 			goto done;
+		}
+		// The file may hold less than its reported size, as files in
+		// sysfs do.  Keep what it holds, in storage of that size.
+		if (n < len) {
+			void *held = NULL;
+			if ((n > 0) && ((held = nni_alloc(n)) == NULL)) {
+				rv = NNG_ENOMEM;
+				nni_free(data, len);
+				goto done;
+			}
+			if (n > 0) {
+				memcpy(held, data, n);
+			}
+			nni_free(data, len);
+			data = held;
+			len  = n;
 		}
 	} else {
 		data = NULL;

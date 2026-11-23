@@ -325,6 +325,32 @@ test_empty_files(void)
 	nni_strfree(temp);
 }
 
+// A file may hold less than the size reported for it, as files in sysfs
+// do.  Reading it must give what it holds.
+static void
+test_file_shorter_than_size(void)
+{
+#ifdef __linux__
+	const char *path = "/sys/devices/system/cpu/online";
+	struct stat st;
+	void       *data = NULL;
+	size_t      len  = 0;
+
+	if ((stat(path, &st) != 0) || (st.st_size < 16)) {
+		NUTS_SKIP("no sysfs file to read");
+		return;
+	}
+	NUTS_PASS(nni_file_get(path, &data, &len));
+	NUTS_ASSERT(data != NULL);
+	NUTS_TRUE(len > 0);
+	NUTS_TRUE(len < (size_t) st.st_size);
+	NUTS_TRUE(((char *) data)[len - 1] == '\n');
+	nni_free(data, len);
+#else
+	NUTS_SKIP("needs a file shorter than its reported size");
+#endif
+}
+
 NUTS_TESTS = {
 	{ "permissions", test_permissions },
 	{ "directory names", test_directory_names },
@@ -335,5 +361,6 @@ NUTS_TESTS = {
 	{ "walk directory", test_directory_walk },
 	{ "file contents", test_file_contents },
 	{ "empty files", test_empty_files },
+	{ "file shorter than size", test_file_shorter_than_size },
 	{ NULL, NULL },
 };
