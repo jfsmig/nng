@@ -63,6 +63,8 @@ sfd_listener_close(void *arg)
 	for (int i = 0; i < l->listen_cnt; i++) {
 		nni_sfd_close_fd(l->listen_q[i]);
 	}
+	// Closing again, e.g. when stopping, must not close them twice.
+	l->listen_cnt = 0;
 	nni_mtx_unlock(&l->mtx);
 }
 

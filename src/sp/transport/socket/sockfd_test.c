@@ -597,6 +597,40 @@ test_sfd_fd_dev_zero(void)
 #endif
 }
 
+// Closing the listener closes the descriptors still queued on it.  Stopping
+// it afterwards must not close them again: by then their numbers may belong
+// to unrelated files.
+void
+test_sfd_listener_close_then_stop(void)
+{
+#if defined(NNG_HAVE_SOCKETPAIR) && defined(NNG_PLATFORM_POSIX)
+	nng_stream_listener *l;
+	int                  fds[2];
+	int                  other[2];
+
+	NUTS_PASS(nng_socket_pair(fds));
+	NUTS_PASS(nng_stream_listener_alloc(&l, "socket://"));
+	NUTS_PASS(nng_stream_listener_listen(l));
+	NUTS_PASS(nng_stream_listener_set_int(l, NNG_OPT_SOCKET_FD, fds[0]));
+	nng_stream_listener_close(l);
+
+	// Give the number of the closed descriptor to an unrelated file.
+	NUTS_ASSERT(pipe(other) == 0);
+	NUTS_ASSERT(dup2(other[0], fds[0]) == fds[0]);
+
+	nng_stream_listener_stop(l);
+	NUTS_TRUE(fcntl(fds[0], F_GETFD) != -1);
+
+	nng_stream_listener_free(l);
+	(void) close(fds[0]);
+	(void) close(fds[1]);
+	(void) close(other[0]);
+	(void) close(other[1]);
+#else
+	NUTS_SKIP("no socketpair");
+#endif
+}
+
 NUTS_TESTS = {
 	{ "socket connect fail", test_sfd_connect_fail },
 	{ "socket malformed address", test_sfd_malformed_address },
@@ -617,5 +651,7 @@ NUTS_TESTS = {
 	{ "socket bad fd type", test_sfd_fd_option_type },
 	{ "socket invalid fd", test_sfd_fd_invalid_fd },
 	{ "socket dev zero", test_sfd_fd_dev_zero },
+	{ "socket listener close then stop",
+	    test_sfd_listener_close_then_stop },
 	{ NULL, NULL },
 };
