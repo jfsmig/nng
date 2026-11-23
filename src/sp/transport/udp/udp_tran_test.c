@@ -678,6 +678,46 @@ test_udp_stats(void)
 	NUTS_CLOSE(s1);
 }
 
+// A dial refused by the listener, here because it has no room for another
+// peer, must fail, so that the dialer tries again later.
+void
+test_udp_dial_refused(void)
+{
+	nng_socket      server;
+	nng_socket      client1;
+	nng_socket      client2;
+	nng_listener    listener;
+	nng_dialer      dialer;
+	nng_stat       *stats;
+	const nng_stat *dstats;
+	const nng_stat *refused;
+	char           *addr;
+
+	NUTS_ADDR(addr, "udp4");
+	NUTS_PASS(nng_pub0_open(&server));
+	NUTS_PASS(nng_listener_create(&listener, server, addr));
+	NUTS_PASS(nng_listener_set_size(listener, NNG_OPT_UDP_MAX_PEERS, 1));
+	NUTS_PASS(nng_listener_start(listener, 0));
+
+	NUTS_PASS(nng_sub0_open(&client1));
+	NUTS_PASS(nng_dial(client1, addr, NULL, 0));
+
+	NUTS_PASS(nng_sub0_open(&client2));
+	NUTS_PASS(nng_dialer_create(&dialer, client2, addr));
+	NUTS_PASS(nng_dialer_start(dialer, NNG_FLAG_NONBLOCK));
+	nng_msleep(500);
+
+	NUTS_PASS(nng_stats_get(&stats));
+	NUTS_TRUE((dstats = nng_stat_find_dialer(stats, dialer)) != NULL);
+	NUTS_TRUE((refused = nng_stat_find(dstats, "refused")) != NULL);
+	NUTS_TRUE(nng_stat_value(refused) > 0);
+	nng_stats_free(stats);
+
+	NUTS_CLOSE(client2);
+	NUTS_CLOSE(client1);
+	NUTS_CLOSE(server);
+}
+
 NUTS_TESTS = {
 
 	{ "udp wild card connect fail", test_udp_wild_card_connect_fail },
@@ -693,6 +733,7 @@ NUTS_TESTS = {
 	{ "udp crush", test_udp_crush },
 	{ "udp pipe", test_udp_pipe },
 	{ "udp max peers", test_udp_max_peers },
+	{ "udp dial refused", test_udp_dial_refused },
 	{ "udp connection tunables", test_udp_conn_tunables },
 	{ "udp reconnect dialer", test_udp_reconnect_dialer },
 	{ "udp stats", test_udp_stats },

@@ -335,10 +335,18 @@ udp_remove_pipe(udp_pipe *p)
 	// ep locked
 	udp_ep  *ep = p->ep;
 	uint64_t id = p->id;
+	nni_aio *aio;
 	if (id == 0) {
 		return;
 	}
 	p->id = 0;
+	// A dial completes once the peer acknowledges the pipe.  If the
+	// pipe goes away first, refused or closed, the dial has failed.
+	if (ep->dialer && (p->state < PIPE_CONN_MATCH) &&
+	    ((aio = nni_list_first(&ep->connaios)) != NULL)) {
+		nni_aio_list_remove(aio);
+		nni_aio_finish_error(aio, NNG_ECONNREFUSED);
+	}
 	NNI_ASSERT(ep->peer_count != 0);
 	ep->peer_count--;
 	for (;;) {
