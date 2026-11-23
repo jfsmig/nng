@@ -1218,7 +1218,9 @@ nni_ctx_open(nni_ctx **ctxp, nni_sock *sock)
 	nni_mtx_lock(&sock->s_mx);
 	if (sock->s_closing) {
 		nni_mtx_unlock(&sock->s_mx);
-		nni_ctx_rele(ctx);
+		// The shutdown may be past closing the contexts already, so
+		// close this one ourselves: releasing it would not.
+		nni_ctx_close(ctx);
 		return (NNG_ECLOSED);
 	}
 	nni_mtx_unlock(&sock->s_mx);

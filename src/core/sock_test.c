@@ -545,6 +545,108 @@ test_size_options(void)
 	NUTS_CLOSE(s1);
 }
 
+// Holding every task thread delays the completion callbacks, so that a
+// socket being closed waits for its pipes to stop.
+#define TASK_THREADS 2 // the fewest the library runs
+
+static struct {
+	nng_mtx *mtx;
+	nng_cv  *cv;
+	int      started;
+	bool     released;
+	bool     closed;
+	int      close_rv;
+} blocker;
+
+static void
+block_task(void *arg)
+{
+	(void) arg;
+	nng_mtx_lock(blocker.mtx);
+	blocker.started++;
+	nng_cv_wake(blocker.cv);
+	while (!blocker.released) {
+		nng_cv_wait(blocker.cv);
+	}
+	nng_mtx_unlock(blocker.mtx);
+}
+
+static void
+close_req(void *arg)
+{
+	int rv = nng_socket_close(*(nng_socket *) arg);
+	nng_mtx_lock(blocker.mtx);
+	blocker.close_rv = rv;
+	blocker.closed   = true;
+	nng_cv_wake(blocker.cv);
+	nng_mtx_unlock(blocker.mtx);
+}
+
+// A context opened while the socket is being closed must not be left
+// behind, or the close waits for it forever.
+static void
+test_ctx_open_during_close(void)
+{
+	nng_init_params params = { 0 };
+	nng_socket      req;
+	nng_socket      rep;
+	nng_ctx         ctx;
+	nng_thread     *thr;
+	nng_aio        *aios[TASK_THREADS];
+	nng_time        deadline;
+
+	params.num_task_threads = TASK_THREADS;
+	params.max_task_threads = TASK_THREADS;
+	nng_fini();
+	NUTS_PASS(nng_init(&params));
+	NUTS_PASS(nng_mtx_alloc(&blocker.mtx));
+	NUTS_PASS(nng_cv_alloc(&blocker.cv, blocker.mtx));
+
+	NUTS_PASS(nng_req0_open(&req));
+	NUTS_PASS(nng_rep0_open(&rep));
+	// req dials, so closing its endpoint does not wait for the task
+	// threads: its close goes on to wait for its pipe.
+	NUTS_MARRY(rep, req);
+
+	for (int i = 0; i < TASK_THREADS; i++) {
+		NUTS_PASS(nng_aio_alloc(&aios[i], block_task, NULL));
+		nng_sleep_aio(0, aios[i]);
+	}
+	nng_mtx_lock(blocker.mtx);
+	while (blocker.started < TASK_THREADS) {
+		nng_cv_wait(blocker.cv);
+	}
+	nng_mtx_unlock(blocker.mtx);
+
+	// The close waits for the pipe to stop, which waits for the task
+	// threads.  Open a context meanwhile.
+	NUTS_PASS(nng_thread_create(&thr, close_req, &req));
+	nng_msleep(100);
+	NUTS_FAIL(nng_ctx_open(&ctx, req), NNG_ECLOSED);
+
+	nng_mtx_lock(blocker.mtx);
+	blocker.released = true;
+	nng_cv_wake(blocker.cv);
+	deadline = nng_clock() + 2000;
+	while (!blocker.closed) {
+		if (nng_cv_until(blocker.cv, deadline) == NNG_ETIMEDOUT) {
+			break;
+		}
+	}
+	NUTS_ASSERT(blocker.closed);
+	NUTS_PASS(blocker.close_rv);
+	nng_mtx_unlock(blocker.mtx);
+
+	nng_thread_destroy(thr);
+	for (int i = 0; i < TASK_THREADS; i++) {
+		nng_aio_wait(aios[i]);
+		nng_aio_free(aios[i]);
+	}
+	NUTS_CLOSE(rep);
+	nng_cv_free(blocker.cv);
+	nng_mtx_free(blocker.mtx);
+}
+
 NUTS_TESTS = {
 	{ "recv timeout", test_recv_timeout },
 	{ "recv non-block", test_recv_nonblock },
@@ -568,6 +670,7 @@ NUTS_TESTS = {
 	{ "size options", test_size_options },
 	{ "endpoint absent options", test_endpoint_absent_options },
 	{ "endpoint types", test_endpoint_types },
+	{ "ctx open during close", test_ctx_open_during_close },
 
 	{ NULL, NULL },
 };
