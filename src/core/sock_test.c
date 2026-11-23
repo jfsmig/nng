@@ -545,6 +545,135 @@ test_size_options(void)
 	NUTS_CLOSE(s1);
 }
 
+// Holding every task thread delays the completion callbacks, so that an
+// endpoint being closed waits in the middle of its shutdown.
+#define TASK_THREADS 2 // the fewest the library runs
+
+static struct {
+	nng_mtx *mtx;
+	nng_cv  *cv;
+	int      started;
+	bool     released;
+} blocker;
+
+static void
+block_task(void *arg)
+{
+	(void) arg;
+	nng_mtx_lock(blocker.mtx);
+	blocker.started++;
+	nng_cv_wake(blocker.cv);
+	while (!blocker.released) {
+		nng_cv_wait(blocker.cv);
+	}
+	nng_mtx_unlock(blocker.mtx);
+}
+
+struct close_race {
+	nng_socket   s;
+	nng_listener l;
+	nng_dialer   d;
+	int          ep_rv;
+	int          sock_rv;
+};
+
+static void
+close_listener(void *arg)
+{
+	struct close_race *cr = arg;
+	cr->ep_rv             = nng_listener_close(cr->l);
+}
+
+static void
+close_dialer(void *arg)
+{
+	struct close_race *cr = arg;
+	cr->ep_rv             = nng_dialer_close(cr->d);
+}
+
+static void
+close_socket(void *arg)
+{
+	struct close_race *cr = arg;
+	cr->sock_rv           = nng_socket_close(cr->s);
+}
+
+// Closing a socket while one of its endpoints is being closed by another
+// thread must leave that endpoint to the other thread.
+static void
+sock_close_during_endpoint_close(bool dialer)
+{
+	nng_init_params   params = { 0 };
+	struct close_race cr     = { 0 };
+	nng_thread       *ep_thr;
+	nng_thread       *sock_thr;
+	nng_aio          *aios[TASK_THREADS];
+	char             *addr;
+
+	params.num_task_threads = TASK_THREADS;
+	params.max_task_threads = TASK_THREADS;
+	nng_fini();
+	NUTS_PASS(nng_init(&params));
+	NUTS_PASS(nng_mtx_alloc(&blocker.mtx));
+	NUTS_PASS(nng_cv_alloc(&blocker.cv, blocker.mtx));
+
+	NUTS_PASS(nng_pair1_open(&cr.s));
+	NUTS_ADDR(addr, "inproc");
+	if (dialer) {
+		// Nothing listens, so the dialer keeps retrying.
+		NUTS_PASS(nng_dial(cr.s, addr, &cr.d, NNG_FLAG_NONBLOCK));
+	} else {
+		NUTS_PASS(nng_listen(cr.s, addr, &cr.l, 0));
+	}
+	nng_msleep(100);
+
+	for (int i = 0; i < TASK_THREADS; i++) {
+		NUTS_PASS(nng_aio_alloc(&aios[i], block_task, NULL));
+		nng_sleep_aio(0, aios[i]);
+	}
+	nng_mtx_lock(blocker.mtx);
+	while (blocker.started < TASK_THREADS) {
+		nng_cv_wait(blocker.cv);
+	}
+	nng_mtx_unlock(blocker.mtx);
+
+	// Stopping the endpoint waits for a callback held back above, and
+	// the socket is closed meanwhile.
+	NUTS_PASS(nng_thread_create(
+	    &ep_thr, dialer ? close_dialer : close_listener, &cr));
+	nng_msleep(100);
+	NUTS_PASS(nng_thread_create(&sock_thr, close_socket, &cr));
+	nng_msleep(100);
+	nng_mtx_lock(blocker.mtx);
+	blocker.released = true;
+	nng_cv_wake(blocker.cv);
+	nng_mtx_unlock(blocker.mtx);
+
+	nng_thread_destroy(ep_thr);
+	nng_thread_destroy(sock_thr);
+	NUTS_PASS(cr.ep_rv);
+	NUTS_PASS(cr.sock_rv);
+
+	for (int i = 0; i < TASK_THREADS; i++) {
+		nng_aio_wait(aios[i]);
+		nng_aio_free(aios[i]);
+	}
+	nng_cv_free(blocker.cv);
+	nng_mtx_free(blocker.mtx);
+}
+
+static void
+test_sock_close_during_listener_close(void)
+{
+	sock_close_during_endpoint_close(false);
+}
+
+static void
+test_sock_close_during_dialer_close(void)
+{
+	sock_close_during_endpoint_close(true);
+}
+
 NUTS_TESTS = {
 	{ "recv timeout", test_recv_timeout },
 	{ "recv non-block", test_recv_nonblock },
@@ -568,6 +697,10 @@ NUTS_TESTS = {
 	{ "size options", test_size_options },
 	{ "endpoint absent options", test_endpoint_absent_options },
 	{ "endpoint types", test_endpoint_types },
+	{ "sock close during listener close",
+	    test_sock_close_during_listener_close },
+	{ "sock close during dialer close",
+	    test_sock_close_during_dialer_close },
 
 	{ NULL, NULL },
 };

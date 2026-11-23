@@ -682,15 +682,23 @@ sock_shutdown(nni_sock *sock, bool device)
 	// Mark us closing, so no more EPs or changes can occur.
 	sock->s_closing = true;
 
+	// An endpoint we cannot hold is being closed by another thread,
+	// which removes it from our list when done.  Wait for that.
 	while ((l = nni_list_first(&sock->s_listeners)) != NULL) {
-		nni_listener_hold(l);
+		if (nni_listener_hold(l) != 0) {
+			nni_cv_wait(&sock->s_cv);
+			continue;
+		}
 		nni_mtx_unlock(&sock->s_mx);
 		nni_listener_close(l);
 		nni_mtx_lock(&sock->s_mx);
 	}
 
 	while ((d = nni_list_first(&sock->s_dialers)) != NULL) {
-		nni_dialer_hold(d);
+		if (nni_dialer_hold(d) != 0) {
+			nni_cv_wait(&sock->s_cv);
+			continue;
+		}
 		nni_mtx_unlock(&sock->s_mx);
 		nni_dialer_close(d);
 		nni_mtx_lock(&sock->s_mx);
@@ -959,6 +967,7 @@ nni_sock_remove_listener(nni_listener *l)
 	nni_mtx_lock(&s->s_mx);
 	NNI_ASSERT(nni_list_node_active(&l->l_node));
 	nni_list_node_remove(&l->l_node);
+	nni_cv_wake(&s->s_cv);
 	nni_mtx_unlock(&s->s_mx);
 
 	// also drop the hold from the socket
@@ -1013,6 +1022,7 @@ nni_sock_remove_dialer(nni_dialer *d)
 	nni_mtx_lock(&s->s_mx);
 	NNI_ASSERT(nni_list_node_active(&d->d_node));
 	nni_list_node_remove(&d->d_node);
+	nni_cv_wake(&s->s_cv);
 	nni_mtx_unlock(&s->s_mx);
 
 	// also drop the hold from the socket
