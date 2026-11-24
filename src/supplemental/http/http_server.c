@@ -235,6 +235,20 @@ static nni_list http_servers =
     NNI_LIST_INITIALIZER(http_servers, nni_http_server, node);
 static nni_mtx http_servers_lk = NNI_MTX_INITIALIZER;
 
+// http_sconn_release drops the hold on the handler that served the last
+// request.  That is only safe once its response is sent, because the
+// response body may point into the handler's data.
+static void
+http_sconn_release(http_sconn *sc)
+{
+	nni_http_handler *h;
+
+	if ((h = sc->release) != NULL) {
+		sc->release = NULL;
+		nni_http_handler_fini(h);
+	}
+}
+
 static void
 http_sc_reap(void *arg)
 {
@@ -252,12 +266,10 @@ http_sc_reap(void *arg)
 		nni_http_handler_fini(sc->handler);
 		sc->handler = NULL;
 	}
-	// Or while the handler ran: a handler that completes its aio after
-	// the close gets no completion callback to release it.
-	if (sc->release != NULL) {
-		nni_http_handler_fini(sc->release);
-		sc->release = NULL;
-	}
+	// Or while the handler ran, or while its response was sent: a handler
+	// that completes its aio after the close gets no completion callback
+	// to release it.
+	http_sconn_release(sc);
 	if (sc->conn != NULL) {
 		nni_http_conn_fini(sc->conn);
 	}
@@ -325,6 +337,10 @@ http_sconn_txdone(void *arg)
 {
 	http_sconn *sc  = arg;
 	nni_aio    *aio = &sc->txaio;
+
+	// The response is out, or failed.  Either way, the handler that
+	// made it is no longer needed.
+	http_sconn_release(sc);
 
 	if (nni_aio_result(aio) != NNG_OK) {
 		http_sconn_close(sc);
@@ -707,18 +723,13 @@ finish:
 static void
 http_sconn_cbdone(void *arg)
 {
-	http_sconn       *sc  = arg;
-	nni_aio          *aio = &sc->cbaio;
-	nni_http_handler *h;
-	nni_http_server  *s = sc->server;
+	http_sconn      *sc  = arg;
+	nni_aio         *aio = &sc->cbaio;
+	nni_http_server *s   = sc->server;
 
-	// Get the handler.  It may be set regardless of success or
-	// failure.  Clear it, and drop our reference, since we're
-	// done with the handler for now.
-	if ((h = sc->release) != NULL) {
-		sc->release = NULL;
-		nni_http_handler_fini(h);
-	}
+	// We keep holding the handler until its response is sent.  Every
+	// path below either sends it, releasing the handler when done, or
+	// closes the connection, whose cleanup releases it.
 
 	if (nni_aio_result(aio) != NNG_OK) {
 		// Hard close, no further feedback.
@@ -761,6 +772,7 @@ http_sconn_cbdone(void *arg)
 	} else {
 		// Presumably client already sent a response.
 		// Wait for another request.
+		http_sconn_release(sc);
 		sc->handler = NULL;
 		nni_http_read_req(sc->conn, &sc->rxaio);
 	}

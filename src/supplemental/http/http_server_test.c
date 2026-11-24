@@ -1106,7 +1106,9 @@ struct count_data {
 	nng_mtx *mtx;
 	int      calls;
 	int      frees;
-	int      go; // httpwait answers once this is set
+	int      go;      // httpwait answers once this is set
+	nng_aio *aio;     // the aio httplater leaves to the test
+	char     body[8]; // what httplater answers, by reference
 };
 
 static void
@@ -1169,6 +1171,33 @@ httpwait(nng_http *conn, void *arg, nng_aio *aio)
 		nng_msleep(1);
 	}
 	httpecho(conn, arg, aio);
+}
+
+// Answers with a body that points into its data, as the static handler does,
+// and leaves the aio for the test to complete.
+static void
+httplater(nng_http *conn, void *arg, nng_aio *aio)
+{
+	struct count_data *cd = arg;
+
+	nng_http_set_body(conn, cd->body, strlen(cd->body));
+	nng_http_set_status(conn, NNG_HTTP_STATUS_OK, NULL);
+	nng_mtx_lock(cd->mtx);
+	cd->aio = aio;
+	cd->calls++;
+	nng_mtx_unlock(cd->mtx);
+}
+
+// The destructor for the data of httplater, which spoils the body.
+static void
+count_spoil(void *arg)
+{
+	struct count_data *cd = arg;
+
+	nng_mtx_lock(cd->mtx);
+	memset(cd->body, 'X', strlen(cd->body));
+	cd->frees++;
+	nng_mtx_unlock(cd->mtx);
 }
 
 // Sends the head of a POST with a 4 byte body to a new handler, then deletes
@@ -1304,6 +1333,57 @@ test_server_stop_during_handler(void)
 
 	NUTS_PASS(nng_http_server_del_handler(st.s, h));
 	nng_http_handler_free(h);
+	NUTS_TRUE(count_wait(&cd, &cd.frees, 1));
+
+	server_free(&st);
+	nng_mtx_free(cd.mtx);
+}
+
+// A handler deleted and freed before it completes must keep its data until
+// the server has sent the response, which may point into that data.
+static void
+test_server_del_handler_before_response(void)
+{
+	struct server_test st;
+	struct count_data  cd;
+	nng_http_handler  *h;
+	nng_aio           *aio;
+	char               reply[4];
+	nng_iov            iov;
+
+	count_init(&cd);
+	(void) snprintf(cd.body, sizeof(cd.body), "body");
+	NUTS_PASS(nng_http_handler_alloc(&h, "/later", httplater));
+	nng_http_handler_set_data(h, &cd, count_spoil);
+	server_setup(&st, h);
+	nng_aio_set_timeout(st.aio, 5000);
+
+	NUTS_PASS(nng_http_set_uri(st.conn, "/later", NULL));
+	nng_http_write_request(st.conn, st.aio);
+	nng_aio_wait(st.aio);
+	NUTS_PASS(nng_aio_result(st.aio));
+	NUTS_ASSERT(count_wait(&cd, &cd.calls, 1));
+
+	NUTS_PASS(nng_http_server_del_handler(st.s, h));
+	nng_http_handler_free(h);
+	NUTS_TRUE(count_get(&cd, &cd.frees) == 0);
+	nng_mtx_lock(cd.mtx);
+	aio = cd.aio;
+	nng_mtx_unlock(cd.mtx);
+	nng_aio_finish(aio, 0);
+
+	nng_http_read_response(st.conn, st.aio);
+	nng_aio_wait(st.aio);
+	NUTS_PASS(nng_aio_result(st.aio));
+	NUTS_HTTP_STATUS(st.conn, NNG_HTTP_STATUS_OK);
+	iov.iov_buf = reply;
+	iov.iov_len = sizeof(reply);
+	NUTS_PASS(nng_aio_set_iov(st.aio, 1, &iov));
+	nng_http_read_all(st.conn, st.aio);
+	nng_aio_wait(st.aio);
+	NUTS_PASS(nng_aio_result(st.aio));
+	NUTS_TRUE(memcmp(reply, "body", sizeof(reply)) == 0);
+	NUTS_MSG("reply: %.4s", reply);
 	NUTS_TRUE(count_wait(&cd, &cd.frees, 1));
 
 	server_free(&st);
@@ -1999,6 +2079,8 @@ NUTS_TESTS = {
 	    test_server_del_handler_during_body },
 	{ "server close during body", test_server_close_during_body },
 	{ "server stop during handler", test_server_stop_during_handler },
+	{ "server del handler before response",
+	    test_server_del_handler_before_response },
 	{ "server transfer encoding", test_server_transfer_encoding },
 	{ "server bad content length", test_server_bad_content_length },
 	{ "server bad content length closes",
