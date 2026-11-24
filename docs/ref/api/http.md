@@ -799,6 +799,12 @@ _server_.
 Once removed, the caller becomes responsible for either freeing the handler
 with [`nng_http_handler_free`] or registering it with another server instance.
 
+The server passes no new request to a removed handler.
+A request whose body is still arriving when the handler is removed gets a
+404 response once the body is in, without calling the handler.
+A request that the server has already passed to the handler may still be
+served after this function returns.
+
 The function returns [`NNG_ENOENT`] if the handler is not currently registered
 with _server_, or [`NNG_ENOTSUP`] if HTTP support is unavailable.
 
@@ -935,6 +941,14 @@ the server it was registered with.
 > Any handlers that are registered with servers are automatically freed
 > when the server itself is deallocated.
 
+A server holds a handler while it reads the body of a request for that
+handler, while the handler runs, and while the server sends its response.
+Freeing the handler during that time only takes effect when the server is
+done with it, and the destructor given to [`nng_http_handler_set_data`]
+runs then, possibly on another thread.
+A client that announces a request body and does not send it delays this
+for as long as its connection stays open.
+
 ### Serving Directories and Files
 
 ```c
@@ -1042,6 +1056,11 @@ _data_ argument that will be passed to the callback.
 Additionally, when the handler is deallocated, if _dtor_ is not `NULL`,
 then it will be called with _data_ as its argument.
 The intended use of this function is deallocate any resources associated with _data_.
+
+> [!TIP]
+> Release _data_ in _dtor_ rather than right after removing or freeing the
+> handler: the handler may still be called for a request that the server
+> passed to it before it was removed, until the destructor runs.
 
 ### Setting the Method
 
