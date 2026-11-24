@@ -287,6 +287,11 @@ nni_posix_pollq_create(nni_posix_pollq *pq)
 	if ((rv = nni_plat_pipe_open(&pq->wakewfd, &pq->wakerfd)) != 0) {
 		return (rv);
 	}
+	// The thread watches the waker with select() too.
+	if (pq->wakerfd >= FD_SETSIZE) {
+		nni_plat_pipe_close(pq->wakewfd, pq->wakerfd);
+		return (NNG_ENOFILES);
+	}
 	if ((rv = nni_thr_init(&pq->thr, nni_posix_poll_thr, pq)) != 0) {
 		nni_plat_pipe_close(pq->wakewfd, pq->wakerfd);
 		return (rv);

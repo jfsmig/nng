@@ -254,6 +254,49 @@ test_pollq_ipc_listen_fd_above_select_limit(void)
 	(void) unlink(path);
 }
 
+// The select poller watches its own waker pipe with select() too, so the
+// pipe must also be below FD_SETSIZE.  When the library is initialized
+// while every lower descriptor is in use, the initialization must fail.
+void
+test_pollq_waker_above_select_limit(void)
+{
+	int     fillers[FD_SETSIZE];
+	int     nfill = 0;
+	int     fd;
+	nng_err rv;
+
+	if (!allow_above_select_limit()) {
+		NUTS_SKIP("cannot open descriptors above FD_SETSIZE");
+		return;
+	}
+	nng_fini();
+
+	// Take every free descriptor below FD_SETSIZE.
+	NUTS_ASSERT((fd = open("/dev/null", O_RDONLY)) >= 0);
+	NUTS_ASSERT(fd < FD_SETSIZE);
+	fillers[nfill++] = fd;
+	while ((fd = fcntl(fillers[0], F_DUPFD, 0)) < FD_SETSIZE) {
+		NUTS_ASSERT(fd >= 0);
+		fillers[nfill++] = fd;
+	}
+	(void) close(fd);
+
+	rv = nng_init(NULL);
+	for (int i = 0; i < nfill; i++) {
+		(void) close(fillers[i]);
+	}
+#ifdef NNG_POLLQ_SELECT
+	NUTS_FAIL(rv, NNG_ENOFILES);
+#else
+	NUTS_PASS(rv);
+#endif
+	// Leave the library initialized, as the test found it.
+	if (rv == NNG_OK) {
+		nng_fini();
+	}
+	NUTS_PASS(nng_init(NULL));
+}
+
 NUTS_TESTS = {
 #ifdef NNG_TRANSPORT_FDC
 	{ "pollq socket fd above select limit",
@@ -263,5 +306,7 @@ NUTS_TESTS = {
 	    test_pollq_tcp_listen_fd_above_select_limit },
 	{ "pollq ipc listen fd above select limit",
 	    test_pollq_ipc_listen_fd_above_select_limit },
+	{ "pollq waker above select limit",
+	    test_pollq_waker_above_select_limit },
 	{ NULL, NULL },
 };
