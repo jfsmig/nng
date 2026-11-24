@@ -1106,6 +1106,7 @@ struct count_data {
 	nng_mtx *mtx;
 	int      calls;
 	int      frees;
+	int      go; // httpwait answers once this is set
 };
 
 static void
@@ -1140,11 +1141,33 @@ count_free(void *arg)
 	count_add(cd, &cd->frees, 1);
 }
 
+// Waits up to 5 seconds for a counter to reach n.
+static bool
+count_wait(struct count_data *cd, int *counter, int n)
+{
+	for (int i = 0; (i < 500) && (count_get(cd, counter) < n); i++) {
+		nng_msleep(10);
+	}
+	return (count_get(cd, counter) >= n);
+}
+
 static void
 httpcount(nng_http *conn, void *arg, nng_aio *aio)
 {
 	struct count_data *cd = arg;
 	count_add(cd, &cd->calls, 1);
+	httpecho(conn, arg, aio);
+}
+
+// Like httpcount, but it answers only once the test sets go.
+static void
+httpwait(nng_http *conn, void *arg, nng_aio *aio)
+{
+	struct count_data *cd = arg;
+	count_add(cd, &cd->calls, 1);
+	while (count_get(cd, &cd->go) == 0) {
+		nng_msleep(1);
+	}
 	httpecho(conn, arg, aio);
 }
 
@@ -1249,6 +1272,39 @@ test_server_close_during_body(void)
 	}
 	NUTS_TRUE(count_get(&cd, &cd.frees) == 1);
 	NUTS_TRUE(count_get(&cd, &cd.calls) == 0);
+
+	server_free(&st);
+	nng_mtx_free(cd.mtx);
+}
+
+// A server stopped while a handler runs must still drop its hold on the
+// handler, even though the handler answers after the stop.
+static void
+test_server_stop_during_handler(void)
+{
+	struct server_test st;
+	struct count_data  cd;
+	nng_http_handler  *h;
+
+	count_init(&cd);
+	NUTS_PASS(nng_http_handler_alloc(&h, "/wait", httpwait));
+	nng_http_handler_set_data(h, &cd, count_free);
+	server_setup(&st, h);
+	nng_aio_set_timeout(st.aio, 5000);
+
+	NUTS_PASS(nng_http_set_uri(st.conn, "/wait", NULL));
+	nng_http_write_request(st.conn, st.aio);
+	nng_aio_wait(st.aio);
+	NUTS_PASS(nng_aio_result(st.aio));
+	NUTS_ASSERT(count_wait(&cd, &cd.calls, 1));
+
+	// The stop closes the connection while the handler runs.
+	nng_http_server_stop(st.s);
+	count_add(&cd, &cd.go, 1);
+
+	NUTS_PASS(nng_http_server_del_handler(st.s, h));
+	nng_http_handler_free(h);
+	NUTS_TRUE(count_wait(&cd, &cd.frees, 1));
 
 	server_free(&st);
 	nng_mtx_free(cd.mtx);
@@ -1942,6 +1998,7 @@ NUTS_TESTS = {
 	{ "server del handler during body",
 	    test_server_del_handler_during_body },
 	{ "server close during body", test_server_close_during_body },
+	{ "server stop during handler", test_server_stop_during_handler },
 	{ "server transfer encoding", test_server_transfer_encoding },
 	{ "server bad content length", test_server_bad_content_length },
 	{ "server bad content length closes",

@@ -252,6 +252,12 @@ http_sc_reap(void *arg)
 		nni_http_handler_fini(sc->handler);
 		sc->handler = NULL;
 	}
+	// Or while the handler ran: a handler that completes its aio after
+	// the close gets no completion callback to release it.
+	if (sc->release != NULL) {
+		nni_http_handler_fini(sc->release);
+		sc->release = NULL;
+	}
 	if (sc->conn != NULL) {
 		nni_http_conn_fini(sc->conn);
 	}
