@@ -2506,6 +2506,8 @@ nni_ws_listener_alloc(nng_stream_listener **wslp, const nng_url *url)
 
 	nni_http_handler_set_host(l->handler, host);
 	nni_http_handler_set_data(l->handler, l, 0);
+	// The handler refuses requests with a body, so do not wait for one.
+	nni_http_handler_collect_body(l->handler, false, 0);
 
 	if ((rv = nni_http_server_init(&l->server, url)) != 0) {
 		ws_listener_free(l);

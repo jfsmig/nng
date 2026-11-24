@@ -996,6 +996,73 @@ test_websocket_listener_unaccepted(void)
 	nni_reap_sys_drain();
 }
 
+// The listener refuses an upgrade request that carries a body, so it must
+// answer without waiting for that body.
+static void
+test_websocket_listener_body_refused(void)
+{
+	nng_stream_listener *listener;
+	nng_stream_dialer   *dialer;
+	nng_stream          *s;
+	nng_aio             *aio;
+	char                 url[128];
+	char                 req[512];
+	char                 res[64];
+	const char          *expect = "HTTP/1.1 413 ";
+	size_t               got;
+	int                  port;
+	nng_iov              iov;
+
+	NUTS_PASS(nng_stream_listener_alloc(&listener, "ws://127.0.0.1:0/ws"));
+	NUTS_PASS(nng_stream_listener_listen(listener));
+	NUTS_PASS(
+	    nng_stream_listener_get_int(listener, NNG_OPT_BOUND_PORT, &port));
+	(void) snprintf(url, sizeof(url), "tcp://127.0.0.1:%d", port);
+	NUTS_PASS(nng_stream_dialer_alloc(&dialer, url));
+	NUTS_PASS(nng_aio_alloc(&aio, NULL, NULL));
+	nng_aio_set_timeout(aio, 2000);
+	nng_stream_dialer_dial(dialer, aio);
+	nng_aio_wait(aio);
+	NUTS_PASS(nng_aio_result(aio));
+	s = nng_aio_get_output(aio, 0);
+
+	// The request announces a body, which never comes.
+	(void) snprintf(req, sizeof(req),
+	    "GET /ws HTTP/1.1\r\n"
+	    "Host: 127.0.0.1:%d\r\n"
+	    "Upgrade: websocket\r\n"
+	    "Connection: Upgrade\r\n"
+	    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+	    "Sec-WebSocket-Version: 13\r\n"
+	    "Content-Length: 5\r\n"
+	    "\r\n",
+	    port);
+	iov.iov_buf = req;
+	iov.iov_len = strlen(req);
+	NUTS_PASS(nng_aio_set_iov(aio, 1, &iov));
+	nng_stream_send(s, aio);
+	nng_aio_wait(aio);
+	NUTS_PASS(nng_aio_result(aio));
+	NUTS_TRUE(nng_aio_count(aio) == strlen(req));
+
+	memset(res, 0, sizeof(res));
+	for (got = 0; got < strlen(expect); got += nng_aio_count(aio)) {
+		iov.iov_buf = res + got;
+		iov.iov_len = sizeof(res) - 1 - got;
+		NUTS_PASS(nng_aio_set_iov(aio, 1, &iov));
+		nng_stream_recv(s, aio);
+		nng_aio_wait(aio);
+		NUTS_PASS(nng_aio_result(aio));
+	}
+	NUTS_TRUE(strncmp(res, expect, strlen(expect)) == 0);
+	NUTS_MSG("response: %s", res);
+
+	nng_stream_free(s);
+	nng_stream_dialer_free(dialer);
+	nng_stream_listener_free(listener);
+	nng_aio_free(aio);
+}
+
 static void
 test_websocket_send_cancel_cleanup(void)
 {
@@ -1050,5 +1117,7 @@ NUTS_TESTS = {
 	    test_websocket_listener_close_accept },
 	{ "websocket listener unaccepted upgrade",
 	    test_websocket_listener_unaccepted },
+	{ "websocket listener body refused",
+	    test_websocket_listener_body_refused },
 	{ NULL, NULL },
 };
