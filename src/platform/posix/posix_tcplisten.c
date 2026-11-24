@@ -407,6 +407,7 @@ tcp_listener_set_listen_fd(void *arg, const void *buf, size_t sz, nni_type t)
 	int                     fd;
 	struct sockaddr_storage ss;
 	socklen_t               len = sizeof(ss);
+	nng_sockaddr            sa;
 	nng_err                 rv;
 
 	if ((rv = nni_copyin_int(&fd, buf, sz, 0, NNI_MAXINT, t)) != NNG_OK) {
@@ -417,7 +418,7 @@ tcp_listener_set_listen_fd(void *arg, const void *buf, size_t sz, nni_type t)
 		return (nni_plat_errno(errno));
 	}
 
-	if (((nni_posix_sockaddr2nn(&l->sa, &ss, len)) != 0) ||
+	if (((nni_posix_sockaddr2nn(&sa, &ss, len)) != 0) ||
 #ifdef NNG_ENABLE_IPV6
 	    ((ss.ss_family != AF_INET) && (ss.ss_family != AF_INET6))
 #else
@@ -441,6 +442,9 @@ tcp_listener_set_listen_fd(void *arg, const void *buf, size_t sz, nni_type t)
 		nni_mtx_unlock(&l->mtx);
 		return (rv);
 	}
+	// Only now that the descriptor is ours does its address replace the
+	// one from the URL.
+	l->sa      = sa;
 	l->started = true;
 	nni_mtx_unlock(&l->mtx);
 	return (NNG_OK);

@@ -15,6 +15,8 @@
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <nuts.h>
@@ -150,10 +152,22 @@ test_pollq_tcp_listen_fd_above_select_limit(void)
 	NUTS_PASS(nng_stream_listener_alloc(&l, "tcp://127.0.0.1"));
 
 #ifdef NNG_POLLQ_SELECT
+	struct sockaddr_in refused;
+	socklen_t          len = sizeof(refused);
+	int                port;
+
+	NUTS_ASSERT(getsockname(high, (void *) &refused, &len) == 0);
+
 	// A rejected descriptor still belongs to the caller.
 	NUTS_FAIL(nng_stream_listener_set_int(l, NNG_OPT_LISTEN_FD, high),
 	    NNG_ENOFILES);
 	NUTS_TRUE(fd_is_open(high));
+
+	// The listener keeps the address of its URL, so it can still listen
+	// there instead.
+	NUTS_PASS(nng_stream_listener_listen(l));
+	NUTS_PASS(nng_stream_listener_get_int(l, NNG_OPT_BOUND_PORT, &port));
+	NUTS_TRUE(port != ntohs(refused.sin_port));
 	nng_stream_listener_free(l);
 	(void) close(high);
 #else
@@ -192,6 +206,54 @@ test_pollq_tcp_listen_fd_above_select_limit(void)
 #endif
 }
 
+void
+test_pollq_ipc_listen_fd_above_select_limit(void)
+{
+	nng_stream_listener *l;
+	struct sockaddr_un   sun;
+	char                 path[64];
+	char                 url[96];
+	int                  lfd;
+	int                  high;
+
+	if (!allow_above_select_limit()) {
+		NUTS_SKIP("cannot open descriptors above FD_SETSIZE");
+		return;
+	}
+	(void) snprintf(
+	    path, sizeof(path), "/tmp/nng_pollq_test_%d", (int) getpid());
+	(void) snprintf(url, sizeof(url), "ipc://%s.url", path);
+	(void) unlink(path);
+
+	NUTS_ASSERT((lfd = socket(AF_UNIX, SOCK_STREAM, 0)) >= 0);
+	memset(&sun, 0, sizeof(sun));
+	sun.sun_family = AF_UNIX;
+	(void) snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", path);
+	NUTS_ASSERT(bind(lfd, (struct sockaddr *) &sun, sizeof(sun)) == 0);
+	NUTS_ASSERT(listen(lfd, 8) == 0);
+	high = move_above_select_limit(lfd);
+
+	NUTS_PASS(nng_stream_listener_alloc(&l, url));
+#ifdef NNG_POLLQ_SELECT
+	struct stat st;
+
+	// A rejected descriptor still belongs to the caller.
+	NUTS_FAIL(nng_stream_listener_set_int(l, NNG_OPT_LISTEN_FD, high),
+	    NNG_ENOFILES);
+	NUTS_TRUE(fd_is_open(high));
+
+	// The listener keeps the path of its URL, so it can still listen
+	// there instead, and leaves the caller's socket alone.
+	NUTS_PASS(nng_stream_listener_listen(l));
+	NUTS_TRUE(stat(path, &st) == 0);
+#else
+	NUTS_PASS(nng_stream_listener_set_int(l, NNG_OPT_LISTEN_FD, high));
+#endif
+	nng_stream_listener_free(l);
+	(void) close(high);
+	(void) unlink(path);
+}
+
 NUTS_TESTS = {
 #ifdef NNG_TRANSPORT_FDC
 	{ "pollq socket fd above select limit",
@@ -199,5 +261,7 @@ NUTS_TESTS = {
 #endif
 	{ "pollq tcp listen fd above select limit",
 	    test_pollq_tcp_listen_fd_above_select_limit },
+	{ "pollq ipc listen fd above select limit",
+	    test_pollq_ipc_listen_fd_above_select_limit },
 	{ NULL, NULL },
 };
