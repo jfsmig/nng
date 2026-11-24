@@ -304,6 +304,7 @@ ipc_listener_set_listen_fd(void *arg, const void *buf, size_t sz, nni_type t)
 	int                     fd;
 	struct sockaddr_storage ss;
 	socklen_t               len = sizeof(ss);
+	nng_sockaddr            sa;
 	int                     rv;
 
 	if ((rv = nni_copyin_int(&fd, buf, sz, 0, NNI_MAXINT, t)) != NNG_OK) {
@@ -314,7 +315,7 @@ ipc_listener_set_listen_fd(void *arg, const void *buf, size_t sz, nni_type t)
 		return (nni_plat_errno(errno));
 	}
 
-	if (((nni_posix_sockaddr2nn(&l->sa, &ss, len)) != 0) ||
+	if (((nni_posix_sockaddr2nn(&sa, &ss, len)) != 0) ||
 	    (ss.ss_family != AF_UNIX)) {
 		return (NNG_EADDRINVAL);
 	}
@@ -333,6 +334,9 @@ ipc_listener_set_listen_fd(void *arg, const void *buf, size_t sz, nni_type t)
 		nni_mtx_unlock(&l->mtx);
 		return (rv);
 	}
+	// Only now that the descriptor is ours does its address replace the
+	// one from the URL.
+	l->sa      = sa;
 	l->started = true;
 	nni_mtx_unlock(&l->mtx);
 	return (NNG_OK);
