@@ -50,8 +50,8 @@ typedef struct http_sconn {
 	nni_list_node     node;
 	nni_http_conn    *conn;
 	nni_http_server  *server;
-	nni_http_handler *handler; // set if we deferred to read body
-	nni_http_handler *release; // set if we dispatched handler
+	nni_http_handler *handler; // held while a request body is read
+	nni_http_handler *release; // held from dispatch until the response
 	bool              close;
 	bool              finished;
 	size_t            unconsumed_body;
@@ -328,7 +328,7 @@ http_sconn_txdatdone(void *arg)
 		return;
 	}
 
-	sc->handler = NULL;
+	NNI_ASSERT(sc->handler == NULL);
 	nni_http_read_req(sc->conn, &sc->rxaio);
 }
 
@@ -352,7 +352,7 @@ http_sconn_txdone(void *arg)
 		return;
 	}
 
-	sc->handler = NULL;
+	NNI_ASSERT(sc->handler == NULL);
 	if (sc->unconsumed_body) {
 		nni_http_read_discard(
 		    sc->conn, sc->unconsumed_body, &sc->rxaio);
@@ -705,6 +705,7 @@ finish:
 	if (sc->handler == NULL) {
 		nni_atomic_inc(&h->ref);
 	}
+	NNI_ASSERT(sc->release == NULL);
 	sc->release = h;
 	sc->handler = NULL;
 
@@ -773,7 +774,7 @@ http_sconn_cbdone(void *arg)
 		// Presumably client already sent a response.
 		// Wait for another request.
 		http_sconn_release(sc);
-		sc->handler = NULL;
+		NNI_ASSERT(sc->handler == NULL);
 		nni_http_read_req(sc->conn, &sc->rxaio);
 	}
 }
@@ -846,7 +847,6 @@ http_server_acccb(void *arg)
 	sc->server = s;
 	nni_list_append(&s->conns, sc);
 
-	sc->handler = NULL;
 	nni_http_read_req(sc->conn, &sc->rxaio);
 	nng_stream_listener_accept(s->listener, aio);
 	nni_mtx_unlock(&s->mtx);
