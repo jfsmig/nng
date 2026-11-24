@@ -180,10 +180,58 @@ test_pollq_tcp_listen_fd_above_select_limit(void)
 #endif
 }
 
+// A listener that never listened has no descriptor registered with the
+// poller.  Closing it must not touch descriptor 0, which belongs to the
+// application.
+void
+test_pollq_close_unregistered_listener(void)
+{
+	const char *urls[] = { "tcp://127.0.0.1:0",
+		"ipc:///tmp/nng_pollq_unregistered_test" };
+	int         fds[2];
+	int         saved;
+	char        c = 0;
+	ssize_t     n_peer;
+	ssize_t     n_recv;
+	ssize_t     n_send;
+
+	// Put one end of a socket pair on descriptor 0, as an inetd or
+	// socket-activated service would have.
+	NUTS_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+	NUTS_ASSERT((saved = dup(0)) >= 0);
+	NUTS_ASSERT(dup2(fds[0], 0) == 0);
+	(void) close(fds[0]);
+
+	for (size_t i = 0; i < sizeof(urls) / sizeof(urls[0]); i++) {
+		nng_stream_listener *l;
+
+		NUTS_PASS(nng_stream_listener_alloc(&l, urls[i]));
+		nng_stream_listener_close(l);
+		nng_stream_listener_free(l);
+	}
+
+	// Descriptor 0 must still work both ways.  Restore it before
+	// checking anything.
+	n_peer = send(fds[1], "x", 1, MSG_NOSIGNAL);
+	n_recv = recv(0, &c, 1, MSG_DONTWAIT);
+	n_send = send(0, "y", 1, MSG_NOSIGNAL);
+
+	(void) dup2(saved, 0);
+	(void) close(saved);
+	(void) close(fds[1]);
+
+	NUTS_TRUE(n_peer == 1);
+	NUTS_TRUE(n_recv == 1);
+	NUTS_TRUE(c == 'x');
+	NUTS_TRUE(n_send == 1);
+}
+
 NUTS_TESTS = {
 	{ "pollq socket fd above select limit",
 	    test_pollq_socket_fd_above_select_limit },
 	{ "pollq tcp listen fd above select limit",
 	    test_pollq_tcp_listen_fd_above_select_limit },
+	{ "pollq close unregistered listener",
+	    test_pollq_close_unregistered_listener },
 	{ NULL, NULL },
 };

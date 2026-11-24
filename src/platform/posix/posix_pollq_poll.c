@@ -94,7 +94,10 @@ nni_posix_pfd_fd(nni_posix_pfd *pfd)
 void
 nni_posix_pfd_close(nni_posix_pfd *pfd)
 {
-	(void) shutdown(pfd->fd, SHUT_RDWR);
+	// A pfd that was never initialized has no descriptor of its own.
+	if (pfd->pq != NULL) {
+		(void) shutdown(pfd->fd, SHUT_RDWR);
+	}
 }
 
 void
