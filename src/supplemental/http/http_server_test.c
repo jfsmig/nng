@@ -1100,35 +1100,112 @@ test_server_post_handler(void)
 	server_free(&st);
 }
 
-// A handler deleted and freed while the server reads the body of a request
-// matched to it must stay valid until that request is done.
+// The data of a handler under test.  It counts the calls to the handler and
+// to the destructor of the data, which runs when the handler is freed.
+struct count_data {
+	nng_mtx *mtx;
+	int      calls;
+	int      frees;
+};
+
+static void
+count_init(struct count_data *cd)
+{
+	memset(cd, 0, sizeof(*cd));
+	NUTS_PASS(nng_mtx_alloc(&cd->mtx));
+}
+
+static int
+count_get(struct count_data *cd, int *counter)
+{
+	int n;
+	nng_mtx_lock(cd->mtx);
+	n = *counter;
+	nng_mtx_unlock(cd->mtx);
+	return (n);
+}
+
+static void
+count_add(struct count_data *cd, int *counter, int n)
+{
+	nng_mtx_lock(cd->mtx);
+	*counter += n;
+	nng_mtx_unlock(cd->mtx);
+}
+
+static void
+count_free(void *arg)
+{
+	struct count_data *cd = arg;
+	count_add(cd, &cd->frees, 1);
+}
+
+static void
+httpcount(nng_http *conn, void *arg, nng_aio *aio)
+{
+	struct count_data *cd = arg;
+	count_add(cd, &cd->calls, 1);
+	httpecho(conn, arg, aio);
+}
+
+// Sends the head of a POST with a 4 byte body to a new handler, then deletes
+// and frees the handler.  It returns true once the server matched the request
+// before the delete, so that it now waits for the body while holding the
+// handler: the destructor has not run yet.  It returns false if that never
+// happens.
+static bool
+del_handler_during_body(struct server_test *st, struct count_data *cd)
+{
+	char    head[] = "POST /post HTTP/1.1\r\nHost: localhost\r\n"
+	                 "Content-Length: 4\r\n\r\n";
+	nng_iov iov;
+
+	// The server matches the request on its own threads, so give it more
+	// time at each attempt.
+	for (int wait = 100; wait <= 1600; wait *= 2) {
+		nng_http_handler *h;
+
+		NUTS_PASS(nng_http_handler_alloc(&h, "/post", httpcount));
+		nng_http_handler_set_method(h, "POST");
+		nng_http_handler_set_data(h, cd, count_free);
+		NUTS_PASS(nng_http_server_add_handler(st->s, h));
+
+		iov.iov_buf = head;
+		iov.iov_len = sizeof(head) - 1;
+		NUTS_PASS(nng_aio_set_iov(st->aio, 1, &iov));
+		nng_http_write_all(st->conn, st->aio);
+		nng_aio_wait(st->aio);
+		NUTS_PASS(nng_aio_result(st->aio));
+		nng_msleep(wait);
+
+		NUTS_PASS(nng_http_server_del_handler(st->s, h));
+		nng_http_handler_free(h);
+		if (count_get(cd, &cd->frees) == 0) {
+			return (true);
+		}
+		// Too early: the request was not matched, and the handler is
+		// gone.  Start over on a new connection.
+		count_add(cd, &cd->frees, -1);
+		server_reset(st);
+	}
+	return (false);
+}
+
+// A handler deleted while the server reads the body of a request matched to
+// it must not be called once the body is in: its data may be gone.
 static void
 test_server_del_handler_during_body(void)
 {
 	struct server_test st;
-	nng_http_handler  *h;
-	char    head[] = "POST /post HTTP/1.1\r\nHost: localhost\r\n"
-	                 "Content-Length: 4\r\n\r\n";
-	char    body[] = "1234";
-	char    reply[4];
-	nng_iov iov;
+	struct count_data  cd;
+	char               body[] = "1234";
+	nng_iov            iov;
 
-	NUTS_PASS(nng_http_handler_alloc(&h, "/post", httpecho));
-	nng_http_handler_set_method(h, "POST");
-	server_setup(&st, h);
+	count_init(&cd);
+	server_setup(&st, NULL);
 	nng_aio_set_timeout(st.aio, 5000);
-
-	// Send the request head only, so that the server waits for the body.
-	iov.iov_buf = head;
-	iov.iov_len = sizeof(head) - 1;
-	NUTS_PASS(nng_aio_set_iov(st.aio, 1, &iov));
-	nng_http_write_all(st.conn, st.aio);
-	nng_aio_wait(st.aio);
-	NUTS_PASS(nng_aio_result(st.aio));
-	nng_msleep(200);
-
-	NUTS_PASS(nng_http_server_del_handler(st.s, h));
-	nng_http_handler_free(h);
+	// This fails if the server does not hold the handler during the body.
+	NUTS_ASSERT(del_handler_during_body(&st, &cd));
 
 	iov.iov_buf = body;
 	iov.iov_len = sizeof(body) - 1;
@@ -1137,20 +1214,17 @@ test_server_del_handler_during_body(void)
 	nng_aio_wait(st.aio);
 	NUTS_PASS(nng_aio_result(st.aio));
 
+	// The answer is the one for a request sent after the delete.
 	nng_http_reset(st.conn);
 	nng_http_read_response(st.conn, st.aio);
 	nng_aio_wait(st.aio);
 	NUTS_PASS(nng_aio_result(st.aio));
-	NUTS_HTTP_STATUS(st.conn, NNG_HTTP_STATUS_OK);
-	iov.iov_buf = reply;
-	iov.iov_len = sizeof(reply);
-	NUTS_PASS(nng_aio_set_iov(st.aio, 1, &iov));
-	nng_http_read_all(st.conn, st.aio);
-	nng_aio_wait(st.aio);
-	NUTS_PASS(nng_aio_result(st.aio));
-	NUTS_TRUE(memcmp(reply, body, sizeof(reply)) == 0);
+	NUTS_HTTP_STATUS(st.conn, NNG_HTTP_STATUS_NOT_FOUND);
+	NUTS_TRUE(count_get(&cd, &cd.calls) == 0);
+	NUTS_TRUE(count_get(&cd, &cd.frees) == 1);
 
 	server_free(&st);
+	nng_mtx_free(cd.mtx);
 }
 
 // A connection closed while the server reads a request body must not keep

@@ -460,6 +460,21 @@ http_parse_content_length(const char *str, size_t *sizep)
 	return (true);
 }
 
+// http_server_has_handler reports whether h is registered with s.  The caller
+// holds s->mtx.
+static bool
+http_server_has_handler(nni_http_server *s, nni_http_handler *h)
+{
+	nni_http_handler *srch;
+
+	NNI_LIST_FOREACH (&s->handlers, srch) {
+		if (srch == h) {
+			return (true);
+		}
+	}
+	return (false);
+}
+
 static void
 http_sconn_rxdone(void *arg)
 {
@@ -492,7 +507,17 @@ http_sconn_rxdone(void *arg)
 
 	if ((h = sc->handler) != NULL) {
 		nni_mtx_lock(&s->mtx);
-		goto finish;
+		if (http_server_has_handler(s, h)) {
+			goto finish;
+		}
+		// The handler was deleted while the body was read, and its
+		// owner may have freed its data.  Answer as if the request
+		// came after the delete.
+		sc->handler = NULL;
+		nni_mtx_unlock(&s->mtx);
+		nni_http_handler_fini(h);
+		http_sconn_error(sc, NNG_HTTP_STATUS_NOT_FOUND);
+		return;
 	}
 
 	// Validate the request -- it has to at least look like HTTP
