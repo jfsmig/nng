@@ -23,31 +23,42 @@
 // poller must refuse them.  The other pollers must accept them like any
 // other descriptor.
 
+// The open-file limit the tests need, to open a few descriptors at and
+// above FD_SETSIZE.
+#define ABOVE_SELECT_LIMIT (FD_SETSIZE + 16)
+
+// allow_above_select_limit raises the soft open-file limit to
+// ABOVE_SELECT_LIMIT if it is lower.  It returns false when the hard limit
+// does not allow that.  It runs no check, so a test may still skip after
+// calling it.
+static bool
+allow_above_select_limit(void)
+{
+	struct rlimit limit;
+
+	if (getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+		return (false);
+	}
+	if ((limit.rlim_cur == RLIM_INFINITY) ||
+	    (limit.rlim_cur >= ABOVE_SELECT_LIMIT)) {
+		return (true);
+	}
+	if ((limit.rlim_max != RLIM_INFINITY) &&
+	    (limit.rlim_max < ABOVE_SELECT_LIMIT)) {
+		return (false);
+	}
+	limit.rlim_cur = ABOVE_SELECT_LIMIT;
+	return (setrlimit(RLIMIT_NOFILE, &limit) == 0);
+}
+
 // move_above_select_limit returns a duplicate of fd numbered at least
-// FD_SETSIZE and closes fd.  It returns -1, leaving fd open, when the
-// process is not allowed to open that many descriptors.
+// FD_SETSIZE and closes fd.  allow_above_select_limit must have succeeded.
 static int
 move_above_select_limit(int fd)
 {
-	struct rlimit limit;
-	int           high;
+	int high;
 
-	if (getrlimit(RLIMIT_NOFILE, &limit) != 0) {
-		return (-1);
-	}
-	if (limit.rlim_cur != RLIM_INFINITY && limit.rlim_cur <= FD_SETSIZE) {
-		if (limit.rlim_max != RLIM_INFINITY &&
-		    limit.rlim_max <= FD_SETSIZE) {
-			return (-1);
-		}
-		limit.rlim_cur = FD_SETSIZE + 1;
-		if (setrlimit(RLIMIT_NOFILE, &limit) != 0) {
-			return (-1);
-		}
-	}
-	if ((high = fcntl(fd, F_DUPFD, FD_SETSIZE)) < 0) {
-		return (-1);
-	}
+	NUTS_ASSERT((high = fcntl(fd, F_DUPFD, FD_SETSIZE)) >= FD_SETSIZE);
 	(void) close(fd);
 	return (high);
 }
@@ -60,6 +71,7 @@ fd_is_open(int fd)
 }
 #endif
 
+#ifdef NNG_TRANSPORT_FDC
 void
 test_pollq_socket_fd_above_select_limit(void)
 {
@@ -68,13 +80,12 @@ test_pollq_socket_fd_above_select_limit(void)
 	int                  fds[2];
 	int                  high;
 
-	NUTS_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
-	if ((high = move_above_select_limit(fds[0])) < 0) {
-		(void) close(fds[0]);
-		(void) close(fds[1]);
+	if (!allow_above_select_limit()) {
 		NUTS_SKIP("cannot open descriptors above FD_SETSIZE");
 		return;
 	}
+	NUTS_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+	high = move_above_select_limit(fds[0]);
 
 	NUTS_PASS(nng_aio_alloc(&aio, NULL, NULL));
 	nng_aio_set_timeout(aio, 5000);
@@ -114,6 +125,7 @@ test_pollq_socket_fd_above_select_limit(void)
 	nng_aio_free(aio);
 	(void) close(fds[1]);
 }
+#endif // NNG_TRANSPORT_FDC
 
 void
 test_pollq_tcp_listen_fd_above_select_limit(void)
@@ -123,17 +135,17 @@ test_pollq_tcp_listen_fd_above_select_limit(void)
 	int                  lfd;
 	int                  high;
 
+	if (!allow_above_select_limit()) {
+		NUTS_SKIP("cannot open descriptors above FD_SETSIZE");
+		return;
+	}
 	NUTS_ASSERT((lfd = socket(AF_INET, SOCK_STREAM, 0)) >= 0);
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_family      = AF_INET;
 	sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	NUTS_ASSERT(bind(lfd, (struct sockaddr *) &sin, sizeof(sin)) == 0);
 	NUTS_ASSERT(listen(lfd, 8) == 0);
-	if ((high = move_above_select_limit(lfd)) < 0) {
-		(void) close(lfd);
-		NUTS_SKIP("cannot open descriptors above FD_SETSIZE");
-		return;
-	}
+	high = move_above_select_limit(lfd);
 
 	NUTS_PASS(nng_stream_listener_alloc(&l, "tcp://127.0.0.1"));
 
@@ -181,8 +193,10 @@ test_pollq_tcp_listen_fd_above_select_limit(void)
 }
 
 NUTS_TESTS = {
+#ifdef NNG_TRANSPORT_FDC
 	{ "pollq socket fd above select limit",
 	    test_pollq_socket_fd_above_select_limit },
+#endif
 	{ "pollq tcp listen fd above select limit",
 	    test_pollq_tcp_listen_fd_above_select_limit },
 	{ NULL, NULL },
