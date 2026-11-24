@@ -1233,28 +1233,25 @@ static void
 test_server_close_during_body(void)
 {
 	struct server_test st;
-	nng_http_handler  *h;
-	char    head[] = "POST /post HTTP/1.1\r\nHost: localhost\r\n"
-	                 "Content-Length: 4\r\n\r\n";
-	nng_iov iov;
+	struct count_data  cd;
 
-	NUTS_PASS(nng_http_handler_alloc(&h, "/post", httpecho));
-	nng_http_handler_set_method(h, "POST");
-	server_setup(&st, h);
+	count_init(&cd);
+	server_setup(&st, NULL);
 	nng_aio_set_timeout(st.aio, 5000);
+	// This fails if the server does not hold the handler during the body.
+	NUTS_ASSERT(del_handler_during_body(&st, &cd));
 
-	iov.iov_buf = head;
-	iov.iov_len = sizeof(head) - 1;
-	NUTS_PASS(nng_aio_set_iov(st.aio, 1, &iov));
-	nng_http_write_all(st.conn, st.aio);
-	nng_aio_wait(st.aio);
-	NUTS_PASS(nng_aio_result(st.aio));
-	nng_msleep(200);
-
+	// The server holds the last reference, so the close frees the handler.
 	nng_http_close(st.conn);
 	st.conn = NULL;
-	nng_msleep(100);
+	for (int i = 0; (i < 500) && (count_get(&cd, &cd.frees) == 0); i++) {
+		nng_msleep(10);
+	}
+	NUTS_TRUE(count_get(&cd, &cd.frees) == 1);
+	NUTS_TRUE(count_get(&cd, &cd.calls) == 0);
+
 	server_free(&st);
+	nng_mtx_free(cd.mtx);
 }
 
 static void
