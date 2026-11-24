@@ -795,8 +795,14 @@ http_sconn_init(http_sconn **scp, nng_stream *stream)
 	nni_aio_init(&sc->cbaio, http_sconn_cbdone, sc);
 
 	if ((rv = nni_http_init(&sc->conn, stream, false)) != 0) {
-		// Can't even accept the incoming request.  Hard close.
-		http_sconn_close(sc);
+		// Can't even accept the incoming request.  Nothing has started
+		// and no server knows this connection, so free it here: the
+		// reap would look for its server.
+		nni_aio_fini(&sc->rxaio);
+		nni_aio_fini(&sc->txaio);
+		nni_aio_fini(&sc->txdataio);
+		nni_aio_fini(&sc->cbaio);
+		NNI_FREE_STRUCT(sc);
 		return (rv);
 	}
 
